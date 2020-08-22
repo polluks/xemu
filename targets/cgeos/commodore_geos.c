@@ -780,11 +780,10 @@ static void update_emulator ( void )
 	// Screen rendering: end
 	xemu_timekeeping_delay(40000);
 	// Ugly CIA trick to maintain realtime TOD in CIAs :)
-	if (seconds_timer_trigger) {
-		struct tm *t = xemu_get_localtime();
-		cia_ugly_tod_updater(&cia1, t);
-		cia_ugly_tod_updater(&cia2, t);
-	}
+	const struct tm *t = xemu_get_localtime();
+	const Uint8 sec10ths = xemu_get_microseconds() / 100000;
+	cia_ugly_tod_updater(&cia1, t, sec10ths);
+	cia_ugly_tod_updater(&cia2, t, sec10ths);
 }
 
 
@@ -797,6 +796,7 @@ int main ( int argc, char **argv )
 	xemucfg_define_switch_option("fullscreen", "Start in fullscreen mode");
 	xemucfg_define_str_option("geosimg", NULL, "Select GEOS disk image to use (NOT USED YET!)");
 	xemucfg_define_str_option("geoskernal", "#geos-kernal.bin", "Select GEOS KERNAL to use");
+	xemucfg_define_str_option("drive", NULL, "Path/name of a D81 GEOS will see as the disk drive");
 	xemucfg_define_str_option("rombasic", "#c64-basic.rom", "Select BASIC ROM to use");
 	xemucfg_define_str_option("romchar", "#c64-chargen.rom", "Select CHARACTER ROM to use");
 	xemucfg_define_str_option("romkernal", "#c64-kernal.rom", "Select KERNAL ROM to use");

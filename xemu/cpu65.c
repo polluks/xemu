@@ -1,7 +1,7 @@
 /* Xemu - Somewhat lame emulation (running on Linux/Unix/Windows/OSX, utilizing
    SDL2) of some 8 bit machines, including the Commodore LCD and Commodore 65
-   and some Mega-65 features as well.
-   Copyright (C)2016-2019 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
+   and MEGA65 as well.
+   Copyright (C)2016-2020 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
 
    THIS IS AN UGLY PIECE OF SOURCE REALLY.
 
@@ -88,32 +88,62 @@ struct cpu65_st CPU65;
 #endif
 
 #ifdef CPU_65CE02
-#ifdef DEBUG_CPU
-#define OPC_65CE02(w) DEBUG("CPU: 65CE02 opcode: %s" NL, w)
-#else
-#define OPC_65CE02(w)
+#	ifdef DEBUG_CPU
+#		define OPC_65CE02(w) DEBUG("CPU: 65CE02 opcode: %s" NL, w)
+#	else
+#		define OPC_65CE02(w)
+#	endif
 #endif
-//static const Uint8 opcycles[] = {7,5,2,2,4,3,4,4,3,2,1,1,5,4,5,4,2,5,5,3,4,3,4,4,1,4,1,1,5,4,5,4,5,5,7,7,3,3,4,4,3,2,1,1,4,4,5,4,2,5,5,3,3,3,4,4,1,4,1,1,4,4,5,4,5,5,2,2,4,3,4,4,3,2,1,1,3,4,5,4,2,5,5,3,4,3,4,4,2,4,3,1,4,4,5,4,4,5,7,5,3,3,4,4,3,2,1,1,5,4,5,4,2,5,5,3,3,3,4,4,2,4,3,1,5,4,5,4,2,5,6,3,3,3,3,4,1,2,1,4,4,4,4,4,2,5,5,3,3,3,3,4,1,4,1,4,4,4,4,4,2,5,2,2,3,3,3,4,1,2,1,4,4,4,4,4,2,5,5,3,3,3,3,4,1,4,1,4,4,4,4,4,2,5,2,6,3,3,4,4,1,2,1,7,4,4,5,4,2,5,5,3,3,3,4,4,1,4,3,3,4,4,5,4,2,5,6,6,3,3,4,4,1,2,1,7,4,4,5,4,2,5,5,3,5,3,4,4,1,4,3,3,7,4,5,4}; // 65CE02 timing (my findings)
-static const Uint8 opcycles[] = {7,5,2,2,4,3,4,4,3,2,1,1,5,4,5,4,2,5,5,3,4,3,4,4,1,4,1,1,5,4,5,4,2,5,7,7,4,3,4,4,3,2,1,1,5,4,4,4,2,5,5,3,4,3,4,4,1,4,1,1,5,4,5,4,5,5,2,2,4,3,4,4,3,2,1,1,3,4,5,4,2,5,5,3,4,3,4,4,1,4,3,3,4,4,5,4,4,5,7,5,3,3,4,4,3,2,1,1,5,4,5,4,2,5,5,3,3,3,4,4,2,4,3,1,5,4,5,4,2,5,6,3,3,3,3,4,1,2,1,4,4,4,4,4,2,5,5,3,3,3,3,4,1,4,1,4,4,4,4,4,2,5,2,2,3,3,3,4,1,2,1,4,4,4,4,4,2,5,5,3,3,3,3,4,1,4,1,4,4,4,4,4,2,5,2,6,3,3,4,4,1,2,1,7,4,4,5,4,2,5,5,3,3,3,4,4,1,4,3,3,4,4,5,4,2,5,6,6,3,3,4,4,1,2,1,6,4,4,5,4,2,5,5,3,5,3,4,4,1,4,3,3,7,4,5,4}; // 65CE02 timing (from gs4510.vhdl)
-#else
-#ifdef CPU_6502_NMOS_ONLY
-static const Uint8 opcycles[] = {7,6,0,8,3,3,5,5,3,2,2,2,4,4,6,6,2,5,0,8,4,4,6,6,2,4,2,7,4,4,7,7,6,6,0,8,3,3,5,5,4,2,2,2,4,4,6,6,2,5,0,8,4,4,6,6,2,4,2,7,4,4,7,7,6,6,0,8,3,3,5,5,3,2,2,2,3,4,6,6,2,5,0,8,4,4,6,6,2,4,2,7,4,4,7,7,6,6,0,8,3,3,5,5,4,2,2,2,5,4,6,6,2,5,0,8,4,4,6,6,2,4,2,7,4,4,7,7,2,6,2,6,3,3,3,3,2,2,2,2,4,4,4,4,2,6,0,6,4,4,4,4,2,5,2,5,5,5,5,5,2,6,2,6,3,3,3,3,2,2,2,2,4,4,4,4,2,5,0,5,4,4,4,4,2,4,2,4,4,4,4,4,2,6,2,8,3,3,5,5,2,2,2,2,4,4,6,6,2,5,0,8,4,4,6,6,2,4,2,7,4,4,7,7,2,6,2,8,3,3,5,5,2,2,2,2,4,4,6,6,2,5,0,8,4,4,6,6,2,4,2,7,4,4,7,7}; // NMOS timing
-#else
-static const Uint8 opcycles[] = {7,6,2,2,5,3,5,5,3,2,2,2,6,4,6,2,2,5,5,2,5,4,6,5,2,4,2,2,6,4,7,2,6,6,2,2,3,3,5,5,4,2,2,2,4,4,6,2,2,5,5,2,4,4,6,5,2,4,2,2,4,4,7,2,6,6,2,2,3,3,5,5,3,2,2,2,3,4,6,2,2,5,5,2,4,4,6,5,2,4,3,2,2,4,7,2,6,6,2,2,3,3,5,5,4,2,2,2,5,4,6,2,2,5,5,2,4,4,6,5,2,4,4,2,6,4,7,2,3,6,2,2,3,3,3,5,2,2,2,2,4,4,4,2,2,6,5,2,4,4,4,5,2,5,2,2,4,5,5,2,2,6,2,2,3,3,3,5,2,2,2,2,4,4,4,2,2,5,5,2,4,4,4,5,2,4,2,2,4,4,4,2,2,6,2,2,3,3,5,5,2,2,2,2,4,4,6,2,2,5,5,2,4,4,6,5,2,4,3,2,2,4,7,2,2,6,2,2,3,3,5,5,2,2,2,2,4,4,6,2,2,5,5,2,4,4,6,5,2,4,4,2,2,4,7,2}; // 65C02 timing
+
+#define TIMINGS_65CE02_	{7,5,2,2,4,3,4,4,3,2,1,1,5,4,5,4,2,5,5,3,4,3,4,4,1,4,1,1,5,4,5,4,5,5,7,7,3,3,4,4,3,2,1,1,4,4,5,4,2,5,5,3,3,3,4,4,1,4,1,1,4,4,5,4,5,5,2,2,4,3,4,4,3,2,1,1,3,4,5,4,2,5,5,3,4,3,4,4,2,4,3,1,4,4,5,4,4,5,7,5,3,3,4,4,3,2,1,1,5,4,5,4,2,5,5,3,3,3,4,4,2,4,3,1,5,4,5,4,2,5,6,3,3,3,3,4,1,2,1,4,4,4,4,4,2,5,5,3,3,3,3,4,1,4,1,4,4,4,4,4,2,5,2,2,3,3,3,4,1,2,1,4,4,4,4,4,2,5,5,3,3,3,3,4,1,4,1,4,4,4,4,4,2,5,2,6,3,3,4,4,1,2,1,7,4,4,5,4,2,5,5,3,3,3,4,4,1,4,3,3,4,4,5,4,2,5,6,6,3,3,4,4,1,2,1,7,4,4,5,4,2,5,5,3,5,3,4,4,1,4,3,3,7,4,5,4} // 65CE02 timing (my findings)
+#define TIMINGS_65CE02	{7,5,2,2,4,3,4,4,3,2,1,1,5,4,5,4,2,5,5,3,4,3,4,4,1,4,1,1,5,4,5,4,2,5,7,7,4,3,4,4,3,2,1,1,5,4,4,4,2,5,5,3,4,3,4,4,1,4,1,1,5,4,5,4,5,5,2,2,4,3,4,4,3,2,1,1,3,4,5,4,2,5,5,3,4,3,4,4,1,4,3,3,4,4,5,4,4,5,7,5,3,3,4,4,3,2,1,1,5,4,5,4,2,5,5,3,3,3,4,4,2,4,3,1,5,4,5,4,2,5,6,3,3,3,3,4,1,2,1,4,4,4,4,4,2,5,5,3,3,3,3,4,1,4,1,4,4,4,4,4,2,5,2,2,3,3,3,4,1,2,1,4,4,4,4,4,2,5,5,3,3,3,3,4,1,4,1,4,4,4,4,4,2,5,2,6,3,3,4,4,1,2,1,7,4,4,5,4,2,5,5,3,3,3,4,4,1,4,3,3,4,4,5,4,2,5,6,6,3,3,4,4,1,2,1,6,4,4,5,4,2,5,5,3,5,3,4,4,1,4,3,3,7,4,5,4} // 65CE02 timing (from gs4510.vhdl)
+#define TIMINGS_6502C65	{7,6,2,8,3,3,5,5,3,2,2,2,4,4,6,6,2,5,5,8,4,4,6,6,2,4,2,7,4,4,7,7,6,6,7,8,3,3,5,5,4,2,2,2,4,4,6,6,2,5,5,8,4,4,6,6,2,4,2,7,4,4,7,7,6,6,2,8,3,3,5,5,3,2,2,2,3,4,6,6,2,5,5,8,4,4,6,6,2,4,2,7,4,4,7,7,6,6,7,8,3,3,5,5,4,2,2,2,5,4,6,6,2,5,5,8,4,4,6,6,2,4,2,7,4,4,7,7,2,6,2,6,3,3,3,3,2,2,2,2,4,4,4,4,2,6,5,6,4,4,4,4,2,5,2,5,5,5,5,5,2,6,2,6,3,3,3,3,2,2,2,2,4,4,4,4,2,5,5,5,4,4,4,4,2,4,2,4,4,4,4,4,2,6,2,8,3,3,5,5,2,2,2,2,4,4,6,6,2,5,5,8,4,4,6,6,2,4,2,7,4,4,7,7,2,6,2,8,3,3,5,5,2,2,2,2,4,4,6,6,2,5,5,8,4,4,6,6,2,4,2,7,4,4,7,7} // 65CE02 with "dead cycles" to mimic NMOS 6502
+#define TIMINGS_6502MOS	{7,6,0,8,3,3,5,5,3,2,2,2,4,4,6,6,2,5,0,8,4,4,6,6,2,4,2,7,4,4,7,7,6,6,0,8,3,3,5,5,4,2,2,2,4,4,6,6,2,5,0,8,4,4,6,6,2,4,2,7,4,4,7,7,6,6,0,8,3,3,5,5,3,2,2,2,3,4,6,6,2,5,0,8,4,4,6,6,2,4,2,7,4,4,7,7,6,6,0,8,3,3,5,5,4,2,2,2,5,4,6,6,2,5,0,8,4,4,6,6,2,4,2,7,4,4,7,7,2,6,2,6,3,3,3,3,2,2,2,2,4,4,4,4,2,6,0,6,4,4,4,4,2,5,2,5,5,5,5,5,2,6,2,6,3,3,3,3,2,2,2,2,4,4,4,4,2,5,0,5,4,4,4,4,2,4,2,4,4,4,4,4,2,6,2,8,3,3,5,5,2,2,2,2,4,4,6,6,2,5,0,8,4,4,6,6,2,4,2,7,4,4,7,7,2,6,2,8,3,3,5,5,2,2,2,2,4,4,6,6,2,5,0,8,4,4,6,6,2,4,2,7,4,4,7,7} // NMOS timing
+#define TIMINGS_65C02	{7,6,2,2,5,3,5,5,3,2,2,2,6,4,6,2,2,5,5,2,5,4,6,5,2,4,2,2,6,4,7,2,6,6,2,2,3,3,5,5,4,2,2,2,4,4,6,2,2,5,5,2,4,4,6,5,2,4,2,2,4,4,7,2,6,6,2,2,3,3,5,5,3,2,2,2,3,4,6,2,2,5,5,2,4,4,6,5,2,4,3,2,2,4,7,2,6,6,2,2,3,3,5,5,4,2,2,2,5,4,6,2,2,5,5,2,4,4,6,5,2,4,4,2,6,4,7,2,3,6,2,2,3,3,3,5,2,2,2,2,4,4,4,2,2,6,5,2,4,4,4,5,2,5,2,2,4,5,5,2,2,6,2,2,3,3,3,5,2,2,2,2,4,4,4,2,2,5,5,2,4,4,4,5,2,4,2,2,4,4,4,2,2,6,2,2,3,3,5,5,2,2,2,2,4,4,6,2,2,5,5,2,4,4,6,5,2,4,3,2,2,4,7,2,2,6,2,2,3,3,5,5,2,2,2,2,4,4,6,2,2,5,5,2,4,4,6,5,2,4,4,2,2,4,7,2} // 65C02 timing
+
+#ifdef CPU_65CE02
+#	ifdef CPU65_65CE02_6502NMOS_TIMING_EMULATION
+		static const Uint8 opcycles_slow_mode[0x100] = TIMINGS_6502C65;
+		// static const Uint8 opcycles_fast_mode[0x100] = TIMINGS_65CE02_;
+		static const Uint8 opcycles_fast_mode[0x100] = TIMINGS_65CE02;
+		static const Uint8 *opcycles = opcycles_fast_mode;
+		void cpu65_set_ce_timing ( int is_ce ) {
+			opcycles = is_ce ? opcycles_fast_mode : opcycles_slow_mode;
+		}
+#	else
+		//static const Uint8 opcycles[0x100] = TIMINGS_65CE02_;
+		static const Uint8 opcycles[0x100] = TIMINGS_65CE02;
 #endif
+#else
+#	ifdef CPU_6502_NMOS_ONLY
+		static const Uint8 opcycles[0x100] = TIMINGS_6502MOS;
+#	else
+		static const Uint8 opcycles[0x100] = TIMINGS_65C02;
+#	endif
 #endif
 
 #ifndef CPU65_DISCRETE_PF_NZ
 #define VALUE_TO_PF_ZERO(a) ((a) ? 0 : CPU65_PF_Z)
 #endif
 
+#ifdef CPU65_DISCRETE_PF_NZ
+#	define ASSIGN_PF_Z_BY_COND(a)	CPU65.pf_z = (a)
+#	define ASSIGN_PF_N_BY_COND(a)	CPU65.pf_n = (a)
+#else
+#	define ASSIGN_PF_Z_BY_COND(a)	do { if (a) CPU65.pf_nz |= CPU65_PF_Z; else CPU65.pf_nz &= ~CPU65_PF_Z; } while(0)
+#	define ASSIGN_PF_N_BY_COND(a)	do { if (a) CPU65.pf_nz |= CPU65_PF_N; else CPU65.pf_nz &= ~CPU65_PF_N; } while(0)
+#endif
+
+
 #define writeFlatAddressedByte(d)	cpu65_write_linear_opcode_callback(d)
+#define readFlatAddressedByte()		cpu65_read_linear_opcode_callback()
+#define writeFlatAddressedLong(d)	cpu65_write_linear_long_opcode_callback(d)
+#define readFlatAddressedLong()		cpu65_read_linear_long_opcode_callback()
 #ifdef CPU65_NO_RMW_EMULATION
 #define writeByteTwice(a,od,nd)		cpu65_write_callback(a,nd)
 #else
 #define writeByteTwice(a,od,nd)		cpu65_write_rmw_callback(a,od,nd)
 #endif
-#define readFlatAddressedByte()		cpu65_read_linear_opcode_callback()
 #define writeByte(a,d)			cpu65_write_callback(a,d)
 #define readByte(a)			cpu65_read_callback(a)
 
@@ -138,7 +168,9 @@ static const Uint8 opcycles[] = {7,6,2,2,5,3,5,5,3,2,2,2,6,4,6,2,2,5,5,2,5,4,6,5
 #define	NMOS_JAM_OPCODE()		cpu65_illegal_opcode_callback()
 #define HAS_NMOS_BUG_JMP_INDIRECT	M65_CPU_ALWAYS_BUG_JMP_INDIRECT || (M65_CPU_NMOS_ONLY_BUG_JMP_INDIRECT && CPU65.nmos_mode)
 #define HAS_NMOS_BUG_NO_PFD_RES_ON_INT	M65_CPU_ALWAYS_BUG_NO_RESET_PFD_ON_INT || (M65_CPU_NMOS_ONLY_BUG_NO_RESET_PFD_ON_INT && CPU65.nmos_mode)
-#define HAS_NMOS_BUG_BCD		M65_CPU_ALWAYS_BUG_BCD || (M65_CPU_NMOS_ONLY_BUG_BCD && CPU65.nmos_mode)
+//#define HAS_NMOS_BUG_BCD		M65_CPU_ALWAYS_BUG_BCD || (M65_CPU_NMOS_ONLY_BUG_BCD && CPU65.nmos_mode)
+// Note: it seems Mega65 is special, and would have the 6502-semantic of BCD even in native, etc mode!! This is NOT true for C65, for example!
+#define HAS_NMOS_BUG_BCD		1
 #else
 /* 65C02 mode, eg for Commodore LCD or 65CE02 mode for Commodore 65 (based on the macro of CPU_65CE02). We define IS_CPU_NMOS as a constant 0, hopefully the C compiler is smart enough
    to see, that is an always true statement used with 'if', thus it won't generate any condition when used that way.
@@ -156,6 +188,26 @@ static const Uint8 opcycles[] = {7,6,2,2,5,3,5,5,3,2,2,2,6,4,6,2,2,5,5,2,5,4,6,5
 static XEMU_INLINE Uint16 readWord(Uint16 addr) {
 	return readByte(addr) | (readByte(addr + 1) << 8);
 }
+
+
+#ifdef MEGA65
+static Uint32 readLong ( Uint16 addr ) {
+	return
+		 readByte(addr    )        |
+		(readByte(addr + 1) << 8 ) |
+		(readByte(addr + 2) << 16) |
+		(readByte(addr + 3) << 24)
+	;
+}
+
+static void writeLong ( Uint16 addr, Uint32 data ) {
+	writeByte(addr    ,  data        & 0xFF);
+	writeByte(addr + 1, (data >>  8) & 0xFF);
+	writeByte(addr + 2, (data >> 16) & 0xFF);
+	writeByte(addr + 3, (data >> 24) & 0xFF);
+}
+#endif
+
 
 #ifdef CPU_65CE02
 /* The stack pointer is a 16 bit register that has two modes. It can be programmed to be either an 8-bit page Programmable pointer, or a full 16-bit pointer.
@@ -258,9 +310,13 @@ void cpu65_reset() {
 #ifdef MEGA65
 	CPU65.nmos_mode = 0;
 	CPU65.previous_op = 0;
+	CPU65.neg_neg_prefix = 0;
 #endif
 	CPU65.pc = readWord(0xFFFC);
-	DEBUG("CPU[" CPU_TYPE "]: RESET, PC=%04X" NL, CPU65.pc);
+	DEBUGPRINT("CPU[" CPU_TYPE "]: RESET, PC=%04X, BCD_behaviour=%s" NL,
+			CPU65.pc, // FIXME
+			HAS_NMOS_BUG_BCD ? "NMOS-6502" : "65C02+"
+	);
 }
 
 
@@ -416,34 +472,70 @@ static XEMU_INLINE void _BIT(Uint8 data) {
 	CPU65.pf_nz = (data & CPU65_PF_N) | VALUE_TO_PF_ZERO(CPU65.a & data);
 #endif
 }
-static XEMU_INLINE void _ADC(int data) {
-	if (CPU65.pf_d) {
-		Uint16 temp  = (CPU65.a & 0x0F) + (data & 0x0F) + (CPU65.pf_c ? 1 : 0);
-		Uint16 temp2 = (CPU65.a & 0xF0) + (data & 0xF0);
-		if (temp > 9) { temp2 += 0x10; temp += 6; }
-		CPU65.pf_v = (~(CPU65.a ^ data) & (CPU65.a ^ temp) & 0x80);
-		if (temp2 > 0x90) temp2 += 0x60;
-		CPU65.pf_c = (temp2 & 0xFF00);
-		CPU65.a = (temp & 0x0F) + (temp2 & 0xF0);
-		SET_NZ(CPU65.a);
+static XEMU_INLINE void _ADC(unsigned int data) {
+	if (XEMU_UNLIKELY(CPU65.pf_d)) {
+		if (HAS_NMOS_BUG_BCD) {
+			/* This algorithm was written according the one found in VICE: 6510core.c */
+			unsigned int temp = (CPU65.a & 0xF) + (data & 0xF) + (CPU65.pf_c ? 1 : 0);
+			if (temp > 0x9)
+				temp += 6;
+			if (temp <= 0x0F)
+				temp = (temp & 0xF) + (CPU65.a & 0xF0) + (data & 0xF0);
+			else
+				temp = (temp & 0xF) + (CPU65.a & 0xF0) + (data & 0xF0) + 0x10;
+			ASSIGN_PF_Z_BY_COND(!((CPU65.a + data + (CPU65.pf_c ? 1 : 0)) & 0xFF));
+			ASSIGN_PF_N_BY_COND(temp & 0x80);
+			CPU65.pf_v = (((CPU65.a ^ temp) & 0x80)  && !((CPU65.a ^ data) & 0x80));
+			if ((temp & 0x1F0) > 0x90)
+				temp += 0x60;
+			CPU65.pf_c = ((temp & 0xFF0) > 0xF0);
+			CPU65.a = temp & 0xFF;
+		} else {
+			/* This algorithm was written according the one found in VICE: 65c02core.c */
+			unsigned int temp  = (CPU65.a & 0x0F) + (data & 0x0F) + (CPU65.pf_c ? 1 : 0);
+			unsigned int temp2 = (CPU65.a & 0xF0) + (data & 0xF0);
+			if (temp > 9) { temp2 += 0x10; temp += 6; }
+			CPU65.pf_v = (~(CPU65.a ^ data) & (CPU65.a ^ temp) & 0x80);
+			if (temp2 > 0x90) temp2 += 0x60;
+			CPU65.pf_c = (temp2 & 0xFF00);
+			CPU65.a = (temp & 0x0F) + (temp2 & 0xF0);
+			SET_NZ(CPU65.a);
+		}
 	} else {
-		Uint16 temp = data + CPU65.a + (CPU65.pf_c ? 1 : 0);
+		unsigned int temp = data + CPU65.a + (CPU65.pf_c ? 1 : 0);
 		CPU65.pf_c = temp > 0xFF;
 		CPU65.pf_v = (!((CPU65.a ^ data) & 0x80) && ((CPU65.a ^ temp) & 0x80));
 		CPU65.a = temp & 0xFF;
 		SET_NZ(CPU65.a);
 	}
 }
-static XEMU_INLINE void _SBC(int data) {
-	if (CPU65.pf_d) {
-		Uint16 temp = CPU65.a - (data & 0x0F) - (CPU65.pf_c ? 0 : 1);
-		if ((temp & 0x0F) > (CPU65.a & 0x0F)) temp -= 6;
-		temp -= (data & 0xF0);
-		if ((temp & 0xF0) > (CPU65.a & 0xF0)) temp -= 0x60;
-		CPU65.pf_v = (!(temp > CPU65.a));
-		CPU65.pf_c = (!(temp > CPU65.a));
-		CPU65.a = temp & 0xFF;
-		SET_NZ(CPU65.a);
+static XEMU_INLINE void _SBC(Uint16 data) {
+	if (XEMU_UNLIKELY(CPU65.pf_d)) {
+		if (HAS_NMOS_BUG_BCD) {
+			/* This algorithm was written according the one found in VICE: 6510core.c */
+			Uint16 temp = CPU65.a - data - (CPU65.pf_c ? 0 : 1);
+			unsigned int temp_a = (CPU65.a & 0xF) - (data & 0xF) - (CPU65.pf_c ? 0 : 1);
+			if (temp_a & 0x10)
+				temp_a = ((temp_a - 6) & 0xf) | ((CPU65.a & 0xf0) - (data & 0xf0) - 0x10);
+			else
+				temp_a = (temp_a & 0xf) | ((CPU65.a & 0xf0) - (data & 0xf0));
+			if (temp_a & 0x100)
+				temp_a -= 0x60;
+			CPU65.pf_c = (temp < 0x100);
+			SET_NZ(temp & 0xFF);
+			CPU65.pf_v = (((CPU65.a ^ temp) & 0x80) && ((CPU65.a ^ data) & 0x80));
+			CPU65.a = temp_a & 0xFF;
+		} else {
+			/* This algorithm was written according the one found in VICE: 65c02core.c */
+			Uint16 temp = CPU65.a - (data & 0x0F) - (CPU65.pf_c ? 0 : 1);
+			if ((temp & 0x0F) > (CPU65.a & 0x0F)) temp -= 6;
+			temp -= (data & 0xF0);
+			if ((temp & 0xF0) > (CPU65.a & 0xF0)) temp -= 0x60;
+			CPU65.pf_v = (!(temp > CPU65.a));
+			CPU65.pf_c = (!(temp > CPU65.a));
+			CPU65.a = temp & 0xFF;
+			SET_NZ(CPU65.a);
+		}
 	} else {
 		Uint16 temp = CPU65.a - data - (CPU65.pf_c ? 0 : 1);
 		CPU65.pf_c = temp < 0x100;
@@ -893,6 +985,17 @@ int cpu65_step (
 	case 0x42:	/* 65C02: NOP imm (non-std NOP with addr mode), 65CE02: NEG */
 			if (IS_CPU_NMOS) { NMOS_JAM_OPCODE(); } else {
 #ifdef CPU_65CE02
+#ifdef MEGA65
+			if (XEMU_UNLIKELY(CPU65.previous_op == 0x42)) {
+				CPU65.neg_neg_prefix = 1;
+				// 65GS02 extension for "32 bit opcodes" (not to be confused with 32 bit addressing ...)
+				// we continue with NEG execution though, since it restores the original A then also the NZ
+				// flags, so no need to remember what was the NZ flags and A values before the first NEG :)
+				OPC_65CE02("NEG-NEG");
+				SET_NZ(CPU65.a = -CPU65.a);
+				goto do_not_reset_neg_neg_prefix;
+			}
+#endif
 			OPC_65CE02("NEG");
 			SET_NZ(CPU65.a = -CPU65.a);	// 65CE02: NEG	FIXME: flags etc are correct?
 #else
@@ -1757,6 +1860,12 @@ int cpu65_step (
 			break;
 	case 0xEA:	/* NOP, 65CE02: it's not special, but in C65 (4510) it is (EOM). It's up the emulator though (in the the second case) ... */
 #ifdef CPU_65CE02
+#ifdef MEGA65
+			if (XEMU_UNLIKELY(CPU65.neg_neg_prefix)) {
+				OPC_65CE02("NEG-NEG-NOP");
+				goto do_not_reset_neg_neg_prefix;	// FIXME: NEG NEG NOP sequence, should we treat ALSO as EOM that NOP and execute the nop callback above in that case?
+			}
+#endif
 			OPC_65CE02("EOM");
 			cpu65_do_nop_callback();
 #endif
@@ -1901,12 +2010,14 @@ int cpu65_step (
 			_BRA( readByte(_zp()) & 128 );
 			}
 			break;
-#ifdef DEBUG_CPU
 	default:
-			FATAL("FATAL: not handled CPU opcode: $%02X", CPU65.op);
+			XEMU_UNREACHABLE();
 			break;
-#endif
 	}
+#ifdef MEGA65
+	CPU65.neg_neg_prefix = 0;
+do_not_reset_neg_neg_prefix:
+#endif
 #ifdef CPU_STEP_MULTI_OPS
 	all_cycles += CPU65.op_cycles;
 	if (XEMU_UNLIKELY(CPU65.multi_step_stop_trigger)) {
@@ -1924,6 +2035,10 @@ int cpu65_step (
 /* ---- SNAPSHOT RELATED ---- */
 
 /* NOTE: cpu_linear_memory_addressing_is_enabled is not the CPU emulator handled data ...
+ * FIXME: many things are missing for now from snapshot ... I should review all cpu65 struct things
+ * if they're really stored, I can't remember, but at least things like neg_neg_prefix is not,
+ * and maybe tons of others. Certainly it will cause problems on shapshot loading back, which is
+ * not so much a frequent usage in Xemu now but there can be in the future!
 */
 
 

@@ -1,7 +1,7 @@
 /* Xemu - Somewhat lame emulation (running on Linux/Unix/Windows/OSX, utilizing
    SDL2) of some 8 bit machines, including the Commodore LCD and Commodore 65
-   and some Mega-65 features as well.
-   Copyright (C)2016-2019 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
+   and MEGA65 as well.
+   Copyright (C)2016-2020 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -32,7 +32,7 @@ char  xemu_load_filepath[PATH_MAX];
 
 
 #ifdef HAVE_XEMU_EXEC_API
-#ifndef _WIN32
+#ifndef XEMU_ARCH_WIN
 #include <sys/wait.h>
 
 int xemuexec_run ( char *const args[] )
@@ -201,8 +201,31 @@ int xemuexec_check_status ( void* pid, int wait )
 }
 #undef PID
 
-// end of #ifndef _WIN32
+// end of #ifndef XEMU_ARCH_WIN
 #endif
+
+void xemuexec_open_native_file_browser ( char *dir )
+{
+#ifdef HAVE_XEMU_EXEC_API
+	static xemuexec_process_t fbp = XEMUEXEC_NULL_PROCESS_ID;
+	char *args[] = {FILE_BROWSER, dir, NULL};
+	if (fbp != XEMUEXEC_NULL_PROCESS_ID) {
+		int w = xemuexec_check_status(fbp, 0);
+		DEBUGPRINT("EXEC: FILEBROWSER: previous file browser process (" PRINTF_LLD ") status was: %d" NL, (unsigned long long int)(uintptr_t)fbp, w);
+		if (w == XEMUEXEC_STILL_RUNNING)
+			ERROR_WINDOW("A file browser is already has been opened.");
+		else if (w == -1)
+			ERROR_WINDOW("Process communication problem");
+		else
+			fbp = XEMUEXEC_NULL_PROCESS_ID;
+	}
+	if (XEMU_LIKELY(fbp == XEMUEXEC_NULL_PROCESS_ID))
+		fbp = xemuexec_run(args);	// FIXME: process on exit will be "orphaned" (ie zombie) till exit from Xemu, because it won't be wait()'ed by the parent (us) ...
+#else
+	ERROR_WINDOW("Sorry, no execution API is supported by this Xemu build\nto allow to launch an OS-native file browser for you on directory:\n%s", dir);
+#endif
+}
+
 
 #ifdef HAVE_XEMU_INSTALLER
 
@@ -213,16 +236,16 @@ static const char installer_marker_prefix[] = "[XEMU_DOWNLOADER]=";
 static char installer_store_to[PATH_MAX];
 static char installer_fetch_url[256];
 static const char *downloader_utility_specifications[] = {
-#ifdef _WIN32
+#ifdef XEMU_ARCH_WIN
 	"powershell", "-Command", "Invoke-WebRequest", installer_fetch_url, "-OutFile", installer_store_to, "-Verbose", NULL,
 	"powershell.exe", "-Command", "Invoke-WebRequest", installer_fetch_url, "-OutFile", installer_store_to, "-Verbose", NULL,
 #endif
 	"curl", "-o", installer_store_to, installer_fetch_url, NULL,
-#ifdef _WIN32
+#ifdef XEMU_ARCH_WIN
 	"curl.exe", "-o", installer_store_to, installer_fetch_url, NULL,
 #endif
 	"wget", "-O", installer_store_to, installer_fetch_url, NULL,
-#ifdef _WIN32
+#ifdef XEMU_ARCH_WIN
 	"wget.exe", "-O", installer_store_to, installer_fetch_url, NULL,
 #endif
 	NULL	// the final stop of listing
@@ -377,29 +400,44 @@ void xemu_set_installer ( const char *filename )
 
 // end of #ifdef HAVE_XEMU_INSTALLER
 #endif
-// end of #ifdef HAVE_XEMU_EXEC_API
+
+// end of #ifdef HAVE_XEMU_EXEC_API - else ...
+#else
+
+void xemuexec_open_native_file_browser ( char *dir )
+{
+	ERROR_WINDOW("Sorry, no execution API is supported by this Xemu build\nto allow to launch an OS-native file browser for you on directory:\n%s", dir);
+}
+
+// end of #ifdef HAVE_XEMU_EXEC_API - all
 #endif
 
 
 
 
-/* Open a file, returning a file descriptor, or negative value in case of failure.
- * Input parameters:
- *	filename: name of the file
+/** Open a file (probably with special search paths, see below), returning a file descriptor, or negative value in case of failure.
+ *
+ * Central part of file handling in Xemu.
+ *
+ * @param *filename
+ *	name of the file
  *		- if it begins with '@' the file is meant to relative to the SDL preferences directory (ie: @thisisit.rom, no need for dirsep!)
  *		- if it begins with '#' the file is meant for 'data directory' which is probed then multiple places, depends on the OS as well
  *		  - Note: in this case, if installer is enabled and file not found, Xemu can try to download the file. For this, see above the "installer" part of this source
  *		- otherwise it's simply a file name, passed as-is
- *	mode: actually the flags parameter for open (O_RDONLY, etc)
+ * @param mode
+ *	actually the flags parameter for open (O_RDONLY, etc)
  *		- O_BINARY is used automatically in case of Windows, no need to specify as input data
  *		- you can even use creating file effect with the right value here
- *	*mode2: pointer to an int, secondary open mode set
+ * @param *mode2
+ *	pointer to an int, secondary open mode set
  *		- if it's NULL pointer, it won't be used ever
  *		- if it's not NULL, open() is also tried with the pointed flags for open() after trying (and failed!) open() with the 'mode' par
  *		- if mode2 pointer is not NULL, the pointed value will be zeroed by this func, if NOT *mode2 is used with successfull open
  *		- the reason for this madness: opening a disk image which neads to be read/write access, but also works for read-only, however
  *		  then the caller needs to know if the disk emulation is about r/w or ro only ...
- *	*filepath_back: if not null, actually tried path will be placed here (even in case of non-successfull call, ie retval is negative)
+ * @param *filepath_back
+ *	if not null, actually tried path will be placed here (even in case of non-successfull call, ie retval is negative)
  *		- in case of multiple-path tries (# prefix) the first (so the most relevant, hopefully) is passed back
  *		- note: if no prefix (@ and #) the filename will be returned as is, even if didn't hold absolute path (only relative) or no path as all (both: relative to cwd)!
  *
@@ -413,7 +451,7 @@ int xemu_open_file ( const char *filename, int mode, int *mode2, char *filepath_
 	if (!*filename)
 		FATAL("Calling xemu_open_file() with empty filename!");
 	max_paths = 0;
-#ifdef __EMSCRIPTEN__
+#ifdef XEMU_ARCH_HTML
 	sprintf(paths[max_paths++], "%s%s", EMSCRIPTEN_SDL_BASE_DIR, (filename[0] == '@' || filename[0] == '#') ? filename + 1 : filename);
 #else
 	if (*filename == '@') {
@@ -423,7 +461,7 @@ int xemu_open_file ( const char *filename, int mode, int *mode2, char *filepath_
 		sprintf(paths[max_paths++], "%s%s", sdl_pref_dir, filename + 1);
 		sprintf(paths[max_paths++], "%srom" DIRSEP_STR "%s", sdl_base_dir, filename + 1);
 		sprintf(paths[max_paths++], "%s%s", sdl_base_dir, filename + 1);
-#ifndef _WIN32
+#ifndef XEMU_ARCH_WIN
 		sprintf(paths[max_paths++], "/usr/local/share/xemu/%s", filename + 1);
 		sprintf(paths[max_paths++], "/usr/local/lib/xemu/%s", filename + 1);
 		sprintf(paths[max_paths++], "/usr/share/xemu/%s", filename + 1);
@@ -434,7 +472,7 @@ int xemu_open_file ( const char *filename, int mode, int *mode2, char *filepath_
 #endif
 	} else
 		strcpy(paths[max_paths++], filename);
-// End of #ifdef __EMSCRIPTEN__
+// End of #ifdef XEMU_ARCH_HTML
 #endif
 	a = 0;
 	do {
@@ -518,6 +556,78 @@ ssize_t xemu_safe_write ( int fd, const void *buffer, size_t length )
 }
 
 
+off_t xemu_safe_file_size_by_fd ( int fd )
+{
+	struct stat st;
+	if (fstat(fd, &st))
+		return OFF_T_ERROR;
+	return st.st_size;
+}
+
+
+off_t xemu_safe_file_size_by_name ( const char *name )
+{
+	struct stat st;
+	if (stat(name, &st))
+		return OFF_T_ERROR;
+	return st.st_size;
+}
+
+int xemu_safe_close ( int fd )
+{
+	return close(fd);
+}
+
+
+#ifdef XEMU_ARCH_WIN
+#endif
+
+
+int xemu_safe_open ( const char *fn, int flags )
+{
+	return open(fn, flags | O_BINARY);
+}
+
+
+int xemu_safe_open_with_mode ( const char *fn, int flags, int mode )
+{
+	return open(fn, flags | O_BINARY, mode);
+}
+
+
+int xemu_save_file ( const char *filename_in, void *data, int size, const char *cry )
+{
+	static const char temp_end[] = ".TMP";
+	char filename[PATH_MAX];
+	char filename_real[PATH_MAX];
+	strcpy(filename, filename_in);
+	strcat(filename, temp_end);
+	int fd = xemu_open_file(filename, O_WRONLY | O_TRUNC | O_CREAT, NULL, filename_real);
+	if (fd < 0) {
+		if (cry)
+			ERROR_WINDOW("%s\nCannot create file: %s\n%s", cry, filename, strerror(errno));
+		return -1;
+	}
+	if (xemu_safe_write(fd, data, size) != size) {
+		if (cry)
+			ERROR_WINDOW("%s\nCannot write %d bytes into file: %s\n%s", cry, size, filename_real, strerror(errno));
+		close(fd);
+		unlink(filename_real);
+		return -1;
+	}
+	close(fd);
+	char filename_real2[PATH_MAX];
+	strcpy(filename_real2, filename_real);
+	filename_real2[strlen(filename_real2) - strlen(temp_end)] = 0;
+	if (rename(filename_real, filename_real2)) {
+		if (cry)
+			ERROR_WINDOW("%s\nCannot rename file %s to %s\n%s", cry, filename_real, filename_real2, strerror(errno));
+		unlink(filename_real);
+		return -1;
+	}
+	return 0;
+}
+
 
 /* Loads a file, probably ROM image etc. It uses xemu_open_file() - see above - for opening it.
  * Return value:
@@ -534,8 +644,7 @@ ssize_t xemu_safe_write ( int fd, const void *buffer, size_t length )
  */
 int xemu_load_file ( const char *filename, void *store_to, int min_size, int max_size, const char *cry )
 {
-	int fd;
-	fd = xemu_open_file(filename, O_RDONLY, NULL, xemu_load_filepath);
+	int fd = xemu_open_file(filename, O_RDONLY, NULL, xemu_load_filepath);
 	if (fd < 0) {
 		if (cry) {
 			ERROR_WINDOW("Cannot open file requested by %s: %s\nTried as: %s\n%s%s", filename, strerror(errno), xemu_load_filepath,
@@ -586,7 +695,7 @@ int xemu_load_file ( const char *filename, void *store_to, int min_size, int max
 }
 
 
-int xemu_create_empty_image ( const char *os_path, unsigned int size )
+int xemu_create_sparse_file ( const char *os_path, Uint64 size )
 {
 	int err = 0, fd;
 	unsigned char zero = 0;

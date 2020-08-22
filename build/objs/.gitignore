@@ -36,3 +36,9 @@
 *.s
 *.S
 *.c
+*.res
+*.data
+*.png
+*.tmp
+*.err
+*.out

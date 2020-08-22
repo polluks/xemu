@@ -1,7 +1,7 @@
 /* Xemu - Somewhat lame emulation (running on Linux/Unix/Windows/OSX, utilizing
    SDL2) of some 8 bit machines, including the Commodore LCD and Commodore 65
-   and some Mega-65 features as well.
-   Copyright (C)2016-2019 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
+   and the MEGA65 as well.
+   Copyright (C)2016-2020 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -33,6 +33,8 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
 
 
 Uint8 kbd_matrix[16];		// keyboard matrix state, 16 * 8 bits at max currently (not compulsory to use all positions!)
+int hid_show_osd_keys = 0;
+
 static int mouse_delta_x;
 static int mouse_delta_y;
 static unsigned int hid_state;
@@ -58,13 +60,15 @@ static const struct KeyMappingDefault *key_map_default;
 int hid_key_event ( SDL_Scancode key, int pressed )
 {
 	const struct KeyMappingUsed *map = key_map;
-	//OSD(-1, -1, "Key %s <%s>", pressed ? "press  " : "release", SDL_GetScancodeName(key));
+	if (hid_show_osd_keys)
+		OSD(-1, -1, "Key %s <%s>", pressed ? "press  " : "release", SDL_GetScancodeName(key));
 	while (map->pos >= 0) {
 		if (map->scan == key) {
 			if (map->pos > 0xFF) {	// special emulator key!
 				switch (map->pos) {	// handle "built-in" events, if emulator target uses them at all ...
 					case XEMU_EVENT_EXIT:
-						exit(0);
+						if (ARE_YOU_SURE(str_are_you_sure_to_exit, i_am_sure_override | ARE_YOU_SURE_DEFAULT_YES))
+							exit(0);
 						break;
 					case XEMU_EVENT_FAKE_JOY_UP:
 						if (pressed) hid_state |= JOYSTATE_UP;     else hid_state &= ~JOYSTATE_UP;
@@ -462,14 +466,20 @@ int hid_handle_one_sdl_event ( SDL_Event *event )
 			break;
 #endif
 		case SDL_QUIT:
+			if (ARE_YOU_SURE(str_are_you_sure_to_exit, i_am_sure_override | ARE_YOU_SURE_DEFAULT_YES)) {
 #ifdef CONFIG_QUIT_CALLBACK
-			emu_quit_callback();
+				emu_quit_callback();
 #endif
-			exit(0);
+				exit(0);
+			}
 			break;
 		case SDL_KEYUP:
 		case SDL_KEYDOWN:
-			if (event->key.repeat == 0 && event->key.keysym.scancode != SDL_SCANCODE_UNKNOWN
+			if (
+#ifndef CONFIG_KBD_ALSO_REPEATS
+				event->key.repeat == 0 &&
+#endif
+				event->key.keysym.scancode != SDL_SCANCODE_UNKNOWN
 #ifdef CONFIG_KBD_SELECT_FOCUS
 				&& (event->key.windowID == sdl_winid || event->key.windowID == 0)
 #endif
@@ -479,8 +489,12 @@ int hid_handle_one_sdl_event ( SDL_Event *event )
 				 * used	for other emulation purposes ... */
 				&& !(event->key.keysym.scancode == SDL_SCANCODE_TAB && (event->key.keysym.mod & KMOD_LALT))
 #endif
-			)
+			) {
+#ifdef CONFIG_KBD_ALSO_RAW_SDL_CALLBACK
+				emu_callback_key_raw_sdl(&event->key);
+#endif
 				hid_key_event(event->key.keysym.scancode, event->key.state == SDL_PRESSED);
+			}
 			break;
 		case SDL_JOYDEVICEADDED:
 		case SDL_JOYDEVICEREMOVED:
@@ -508,6 +522,16 @@ int hid_handle_one_sdl_event ( SDL_Event *event )
 			else
 				emu_callback_key(-2, 0, event->type == SDL_MOUSEBUTTONDOWN, event->button.button);
 			break;
+#ifdef CONFIG_KBD_ALSO_TEXTEDITING_SDL_CALLBACK
+		case SDL_TEXTEDITING:
+			emu_callback_key_texteditng_sdl(&event->edit);
+			break;
+#endif
+#ifdef CONFIG_KBD_ALSO_TEXTINPUT_SDL_CALLBACK
+		case SDL_TEXTINPUT:
+			emu_callback_key_textinput_sdl(&event->text);
+			break;
+#endif
 		default:
 			handled = 0;
 			break;

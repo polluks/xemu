@@ -1,5 +1,5 @@
 /* Xep128: Minimalistic Enterprise-128 emulator with focus on "exotic" hardware
-   Copyright (C)2015,2016,2017 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
+   Copyright (C)2015-2017,2020 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
    http://xep128.lgb.hu/
 
 This program is free software; you can redistribute it and/or modify
@@ -30,7 +30,7 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
 #include "cpu.h"
 #include "primoemu.h"
 #include "emu_rom_interface.h"
-#include "w5300.h"
+#include "epnet.h"
 #include "zxemu.h"
 #include "printer.h"
 #include "joystick.h"
@@ -65,6 +65,7 @@ static double SCALER;
 static int sram_ready = 0;
 time_t unix_time;
 
+int chatty_xemu = 1;	// needed by the ugly mix of old Xep128 solutions and newer Xemu headers :-O
 
 
 /* Ugly indeed, but it seems some architecture/OS does not support "standard"
@@ -89,8 +90,8 @@ void shutdown_sdl(void)
 	if (guarded_exit) {
 		audio_close();
 		printer_close();
-#ifdef CONFIG_W5300_SUPPORT
-		w5300_shutdown();
+#ifdef CONFIG_EPNET_SUPPORT
+		epnet_uninit();
 #endif
 #ifdef CONFIG_EXDOS_SUPPORT
 		wd_detach_disk_image();
@@ -462,8 +463,9 @@ int main (int argc, char *argv[])
 	"files");
 	if (screen_init())
 		return 1;
-	if (xepgui_init())
-		return 1;
+	//if (xepgui_init(NULL))
+	//	return 1;
+	xepgui_init(NULL);	// allow to fail (do not exit if it fails). Some targets may not have X running
 	audio_init(config_getopt_int("audio"));
 	z80ex_init();
 	set_ep_cpu(CPU_Z80);
@@ -494,8 +496,8 @@ int main (int argc, char *argv[])
 	wd_exdos_reset();
 	wd_attach_disk_image(config_getopt_str("wdimg"));
 #endif
-#ifdef CONFIG_W5300_SUPPORT
-	w5300_init(NULL);
+#ifdef CONFIG_EPNET_SUPPORT
+	epnet_init(NULL);
 #endif
 	ticks = SDL_GetTicks();
 	balancer = 0;

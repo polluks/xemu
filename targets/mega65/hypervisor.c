@@ -1,4 +1,4 @@
-/* A work-in-progess Mega-65 (Commodore-65 clone origins) emulator
+/* A work-in-progess MEGA65 (Commodore 65 clone origins) emulator
    Part of the Xemu project, please visit: https://github.com/lgblgblgb/xemu
    Copyright (C)2016-2019 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
 
@@ -311,7 +311,11 @@ void hypervisor_debug ( void )
 	}
 	if (XEMU_UNLIKELY((cpu65.pc & 0xC000) != 0x8000)) {
 		DEBUG("HYPERVISOR-DEBUG: execution outside of the hypervisor memory, PC = $%04X" NL, cpu65.pc);
-		FATAL("Hypervisor fatal error: execution outside of the hypervisor memory, PC=$%04X SP=$%04X", cpu65.pc, cpu65.sphi | cpu65.s);
+		ERROR_WINDOW("Hypervisor fatal error: execution outside of the hypervisor memory, PC=$%04X SP=$%04X", cpu65.pc, cpu65.sphi | cpu65.s);
+		if (QUESTION_WINDOW("Reset|Exit Xemu", "What to do now?"))
+			XEMUEXIT(1);
+		else
+			hypervisor_start_machine();
 		return;
 	}
 	if (!resolver_ok) {

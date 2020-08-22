@@ -1,7 +1,7 @@
 /* Xemu - Somewhat lame emulation (running on Linux/Unix/Windows/OSX, utilizing
    SDL2) of some 8 bit machines, including the Commodore LCD and Commodore 65
-   and some Mega-65 features as well.
-   Copyright (C)2016-2019 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
+   and MEGA65 as well.
+   Copyright (C)2016-2020 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
 
    The goal of emutools.c is to provide a relative simple solution
    for relative simple emulators using SDL2.
@@ -20,13 +20,19 @@ You should have received a copy of the GNU General Public License
 along with this program; if not, write to the Free Software
 Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
 
-#ifndef __XEMU_COMMON_EMUTOOLS_H_INCLUDED
-#define __XEMU_COMMON_EMUTOOLS_H_INCLUDED
+#ifndef XEMU_COMMON_EMUTOOLS_H_INCLUDED
+#define XEMU_COMMON_EMUTOOLS_H_INCLUDED
 
+#ifdef XEMU_ARCH_OSX
+// It seems SDL2 on OSX produces LOTS of warning because of usage 'memset_pattern4'.
+// It seems SDL2 has a bug not including header string.h which is the place where that function is defined on OSX.
+// Let's try to fix that, by manually including string.h here ...
+#include <string.h>
+#endif
 #include <SDL.h>
 #include "xemu/emutools_basicdefs.h"
 
-#ifdef __EMSCRIPTEN__
+#ifdef XEMU_ARCH_HTML
 #include <emscripten.h>
 #define EMSCRIPTEN_SDL_BASE_DIR "/files/"
 #define MSG_POPUP_WINDOW(sdlflag, title, msg, win) \
@@ -36,23 +42,24 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
 #define INSTALL_DIRECTORY_ENTRY_NAME "default-files"
 #endif
 
+#ifdef XEMU_ARCH_MAC
+extern int macos_gui_started;
+#endif
+
 #define APP_ORG "xemu-lgb"
 #ifndef APP_DESC_APPEND
 #define APP_DESC_APPEND " - Xemu"
 #endif
 
-#ifdef __EMSCRIPTEN__
+#ifdef XEMU_ARCH_HTML
 #define XEMU_MAIN_LOOP(func,p1,p2) emscripten_set_main_loop(func,p1,p2)
 #else
 #define XEMU_MAIN_LOOP(func,p1,p2) for (;;) func()
 #endif
 
-extern void sysconsole_open  ( void );
-extern void sysconsole_close ( const char *waitmsg );
-#ifdef HAVE_XEMU_SOCKET_API
-extern int  xemu_use_sockapi ( void );
-extern void xemu_free_sockapi ( void );
-#endif
+extern void sysconsole_open   ( void );
+extern void sysconsole_close  ( const char *waitmsg );
+extern int  sysconsole_toggle ( int set );
 
 // You should define this in your emulator, most probably with resetting the keyboard matrix
 // Purpose: emulator windows my cause the emulator does not get the key event normally, thus some keys "seems to be stucked"
@@ -104,6 +111,15 @@ static XEMU_INLINE int CHECK_SNPRINTF( int ret, int limit )
 extern int _sdl_emu_secured_modal_box_ ( const char *items_in, const char *msg );
 #define QUESTION_WINDOW(items, msg) _sdl_emu_secured_modal_box_(items, msg)
 
+extern int i_am_sure_override;
+extern const char *str_are_you_sure_to_exit;
+
+#define ARE_YOU_SURE_OVERRIDE		1
+#define ARE_YOU_SURE_DEFAULT_YES	2
+#define ARE_YOU_SURE_DEFAULT_NO		4
+
+extern int ARE_YOU_SURE ( const char *s, int flags );
+
 extern char *sdl_window_title;
 extern char *window_title_custom_addon;
 extern char *window_title_info_addon;
@@ -114,10 +130,12 @@ extern char *xemu_app_org, *xemu_app_name;
 extern int seconds_timer_trigger;
 extern char *sdl_pref_dir, *sdl_base_dir, *sdl_inst_dir;
 extern int sysconsole_is_open;
+extern int sdl_default_win_x_size, sdl_default_win_y_size;
 
 extern int xemu_init_debug ( const char *fn );
 extern time_t xemu_get_unixtime ( void );
 extern struct tm *xemu_get_localtime ( void );
+extern unsigned int xemu_get_microseconds ( void );
 extern void *xemu_malloc ( size_t size );
 extern void *xemu_realloc ( void *p, size_t size );
 
@@ -133,6 +151,7 @@ extern void *xemu_malloc_ALIGNED ( size_t size );
 
 extern char *xemu_strdup ( const char *s );
 extern void xemu_set_full_screen ( int setting );
+extern void xemu_set_screen_mode ( int setting );
 extern void xemu_timekeeping_delay ( int td_em );
 extern void xemu_pre_init ( const char *app_organization, const char *app_name, const char *slogan );
 extern int xemu_init_sdl ( void );
@@ -150,10 +169,14 @@ extern int xemu_post_init (
         int locked_texture_update,              // use locked texture method [non zero], or malloc'ed stuff [zero]. NOTE: locked access doesn't allow to _READ_ pixels and you must fill ALL pixels!
         void (*shutdown_callback)(void)         // callback function called on exit (can be nULL to not have any emulator specific stuff)
 );
+extern int xemu_set_icon_from_xpm ( char *xpm[] );
 extern void xemu_timekeeping_start ( void );
 extern void xemu_render_dummy_frame ( Uint32 colour, int texture_x_size, int texture_y_size );
 extern Uint32 *xemu_start_pixel_buffer_access ( int *texture_tail );
 extern void xemu_update_screen ( void );
+
+extern int  osd_status;
+extern const Uint16 font_16x16[];
 
 extern int  osd_init ( int xsize, int ysize, const Uint8 *palette, int palette_entries, int fade_dec, int fade_end );
 extern int  osd_init_with_defaults ( void );
@@ -185,5 +208,29 @@ extern void osd_write_string ( int x, int y, const char *s );
 	osd_on(OSD_FADE_START); \
 } while(0)
 
+#include <dirent.h>
+#ifdef XEMU_ARCH_WIN
+	typedef _WDIR XDIR;
+	extern int   xemu_winos_utf8_to_wchar ( wchar_t *restrict o, const char *restrict i, size_t size );
+	extern int   xemu_os_open   ( const char *fn, int flags );
+	extern int   xemu_os_creat  ( const char *fn, int flags, int pmode );
+	extern FILE *xemu_os_fopen  ( const char *restrict fn, const char *restrict mode );
+	extern int   xemu_os_unlink ( const char *fn );
+	extern int   xemu_os_mkdir  ( const char *fn, const int mode );
+	extern XDIR *xemu_os_opendir ( const char *fn );
+	extern struct dirent *xemu_os_readdir ( XDIR *dirp, struct dirent *entry );
+	extern int   xemu_os_closedir ( XDIR *dir );
+#else
+	typedef	DIR	XDIR;
+#	define	xemu_os_open			open
+#	define	xemu_os_creat			creat
+#	define	xemu_os_fopen			fopen
+#	define	xemu_os_unlink			unlink
+#	define	xemu_os_mkdir			mkdir
+#	define	xemu_os_opendir			opendir
+#	define	xemu_os_readdir(dirp,not_used)	readdir(dirp)
+#	define	xemu_os_closedir 		closedir
+#endif
+#define	xemu_os_close	close
 
 #endif

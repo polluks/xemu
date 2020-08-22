@@ -1,4 +1,4 @@
-/* A work-in-progess Mega-65 (Commodore-65 clone origins) emulator
+/* A work-in-progess MEGA65 (Commodore 65 clone origins) emulator
    Part of the Xemu project, please visit: https://github.com/lgblgblgb/xemu
    Copyright (C)2018 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
 
@@ -352,6 +352,7 @@ static int ethernet_thread ( void *unused )
 
 Uint8 eth65_read_reg ( int addr )
 {
+	DEBUG("ETH: reading register $%02X" NL, addr & 0xF);
 	switch (addr & 0xF) {
 		/* **** $D6E0 register **** */
 		case 0x00:
@@ -417,6 +418,7 @@ Uint8 eth65_read_reg ( int addr )
 
 void eth65_write_reg ( int addr, Uint8 data )
 {
+	DEBUG("ETH: writing register $%02X with data $%02X" NL, addr & 0xF, data);
 	switch (addr & 0xF) {
 		/* **** $D6E0 register **** */
 		case 0x00:

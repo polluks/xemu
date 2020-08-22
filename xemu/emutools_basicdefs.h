@@ -1,7 +1,7 @@
 /* Xemu - Somewhat lame emulation (running on Linux/Unix/Windows/OSX, utilizing
    SDL2) of some 8 bit machines, including the Commodore LCD and Commodore 65
-   and some Mega-65 features as well.
-   Copyright (C)2016-2018 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
+   and MEGA65 as well.
+   Copyright (C)2016-2020 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
 
    The goal of emutools.c is to provide a relative simple solution
    for relative simple emulators using SDL2.
@@ -20,27 +20,33 @@ You should have received a copy of the GNU General Public License
 along with this program; if not, write to the Free Software
 Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
 
-#ifndef __XEMU_COMMON_EMUTOOLS_BASICDEFS_H_INCLUDED
-#define __XEMU_COMMON_EMUTOOLS_BASICDEFS_H_INCLUDED
+#ifndef XEMU_COMMON_EMUTOOLS_BASICDEFS_H_INCLUDED
+#define XEMU_COMMON_EMUTOOLS_BASICDEFS_H_INCLUDED
+
+#define COPYRIGHT_YEARS "2016-2020"
 
 #include <stdio.h>
 #include <limits.h>
+#include <stdlib.h>
 
 #define USE_REGPARM
 
-#if defined(__EMSCRIPTEN__) && !defined(CONFIG_EMSCRIPTEN_OK)
-#error "Sorry, emscripten is not yet validated for this sub-project ..."
+// In case of RELEASE build, we don't support debugging (ie write detailed log file),
+// since it introduces some overhead in form of many if's at critical places, even
+// if it's not used.
+#ifdef XEMU_RELEASE_BUILD
+#define DISABLE_DEBUG
 #endif
 
 #ifndef XEMU_DISABLE_SDL
-#ifndef HAVE_SDL2
-#error  "We require SDL2, but HAVE_SDL2 was not defined: SDL2 cannot be detected?"
+#ifndef XEMU_HAS_SDL2
+#error  "We require SDL2, but XEMU_HAS_SDL2 was not defined: SDL2 cannot be detected?"
 #endif
 #include <SDL_types.h>
 #include <SDL_endian.h>
 #else
-#ifdef HAVE_SDL2
-#error "This build does not want SDL2, but HAVE_SDL2 was specified?"
+#ifdef XEMU_HAS_SDL2
+#error "This build does not want SDL2, but XEMU_HAS_SDL2 was specified?"
 #endif
 #include <stdint.h>
 typedef int8_t Sint8;
@@ -70,7 +76,7 @@ typedef uint64_t Uint64;
 #endif /* __linux__ */
 #endif
 
-#if UINTPTR_MAX == 0xffffffff
+#if UINTPTR_MAX == 0xffffffffU
 #	define ARCH_32BIT
 #	define ARCH_BITS 32
 #	define ARCH_BITS_AS_TEXT "32"
@@ -81,32 +87,40 @@ typedef uint64_t Uint64;
 #endif
 
 #if defined(__EMSCRIPTEN__)
-#	define CC_TYPE "emscripten"
+#	define CC_TYPE "clang-emscripten"
 #elif defined(__clang__)
 #	define CC_TYPE "clang"
 #elif defined(__MINGW64__)
-#	define CC_TYPE "mingw64"
+#	define CC_TYPE "gcc-mingw64"
 #elif defined(__MINGW32__)
-#	define CC_TYPE "mingw32"
+#	define CC_TYPE "gcc-mingw32"
 #elif defined(__GNUC__)
-#	define CC_TYPE "gcc"
+#	define CC_TYPE "gcc-compatible"
 #else
-#	define CC_TYPE "Something"
+#	define CC_TYPE "UNKNOWN-COMPILER"
 #	warning "Unrecognizable C compiler"
 #endif
 
+#define XEMU_UNREACHABLE_FATAL_ERROR()	do { fprintf(stderr, "*** Unreachable code point hit in function %s\n", __func__); exit(1); } while(0)
+
 #ifdef __GNUC__
-#define XEMU_LIKELY(__x__)	__builtin_expect(!!(__x__), 1)
-#define XEMU_UNLIKELY(__x__)	__builtin_expect(!!(__x__), 0)
-#ifdef DO_NOT_FORCE_INLINE
-#define XEMU_INLINE		inline
+#	define XEMU_LIKELY(__x__)	__builtin_expect(!!(__x__), 1)
+#	define XEMU_UNLIKELY(__x__)	__builtin_expect(!!(__x__), 0)
+#	ifdef DO_NOT_FORCE_UNREACHABLE
+#		define XEMU_UNREACHABLE()	XEMU_UNREACHABLE_FATAL_ERROR()
+#	else
+#		define XEMU_UNREACHABLE()	__builtin_unreachable()
+#	endif
+#	ifdef DO_NOT_FORCE_INLINE
+#		define XEMU_INLINE		inline
+#	else
+#		define XEMU_INLINE		__attribute__ ((__always_inline__)) inline
+#	endif
 #else
-#define XEMU_INLINE		__attribute__ ((__always_inline__)) inline
-#endif
-#else
-#define XEMU_LIKELY(__x__)	(__x__)
-#define XEMU_UNLIKELY(__x__)	(__x__)
-#define XEMU_INLINE		inline
+#	define XEMU_LIKELY(__x__)	(__x__)
+#	define XEMU_UNLIKELY(__x__)	(__x__)
+#	define XEMU_INLINE		inline
+#	define XEMU_UNREACHABLE()	XEMU_UNREACHABLE_FATAL_ERROR()
 #endif
 
 #if defined(USE_REGPARM) && defined(__GNUC__) && !defined(__EMSCRIPTEN__)
@@ -118,7 +132,7 @@ typedef uint64_t Uint64;
 /* Note: O_BINARY is a must for Windows for opening binary files, odd enough, I know ...
          So we always use O_BINARY in the code, and defining O_BINARY as zero for non-Windows systems, so it won't hurt at all.
 	 Surely, SDL has some kind of file abstraction layer, but I seem to get used to some "native" code as well :-) */
-#ifndef _WIN32
+#ifndef XEMU_ARCH_WIN
 #	define O_BINARY		0
 #	define DIRSEP_STR	"/"
 #	define DIRSEP_CHR	'/'
@@ -136,18 +150,20 @@ typedef uint64_t Uint64;
 #endif
 
 extern FILE *debug_fp;
+extern int chatty_xemu;
 
 #ifdef DISABLE_DEBUG
 #define DEBUG(...)
 #define DEBUGPRINT(...) printf(__VA_ARGS__)
 #else
-#define DEBUG(...) do { \
+#define DEBUG(...) do { 		\
 	if (XEMU_UNLIKELY(debug_fp))	\
 		fprintf(debug_fp, __VA_ARGS__);	\
 } while (0)
-#define DEBUGPRINT(...) do {	\
-        printf(__VA_ARGS__);	\
-        DEBUG(__VA_ARGS__);	\
+#define DEBUGPRINT(...) do {		\
+	if (chatty_xemu)		\
+		printf(__VA_ARGS__);	\
+	DEBUG(__VA_ARGS__);		\
 } while (0)
 #endif
 
@@ -199,11 +215,12 @@ typedef union {
 #endif
 static inline int xemu_byte_order_test ( void )
 {
-	RegPair r;
-	r._raw[0] = 0x01;
-	r._raw[1] = 0x23;
-	r._raw[2] = 0x45;
-	r._raw[3] = 0x67;
+	static volatile RegPair r;
+	volatile RegPair *w = &r;
+	w->_raw[0] = 0x01;
+	w->_raw[1] = 0x23;
+	w->_raw[2] = 0x45;
+	w->_raw[3] = 0x67;
 	return (r.b.l != ENDIAN_CHECKER_BYTE_L || r.b.h != ENDIAN_CHECKER_BYTE_H || r.w.w != ENDIAN_CHECKER_WORD || r.d != ENDIAN_CHECKER_DWORD);
 }
 
@@ -215,7 +232,9 @@ static inline int xemu_byte_order_test ( void )
 #define XEMUEXIT(n)	exit(n)
 #endif
 
-extern const char *XEMU_BUILDINFO_ON, *XEMU_BUILDINFO_AT, *XEMU_BUILDINFO_GIT, *XEMU_BUILDINFO_CC, *XEMU_BUILDINFO_TARGET;
+#define BOOLEAN_VALUE(n)	(!!(n))
+
+extern const char *XEMU_BUILDINFO_ON, *XEMU_BUILDINFO_AT, *XEMU_BUILDINFO_GIT, *XEMU_BUILDINFO_CC, *XEMU_BUILDINFO_TARGET, *XEMU_BUILDINFO_CDATE;
 extern const char emulators_disclaimer[];
 extern void xemu_dump_version ( FILE *fp, const char *slogan );
 
