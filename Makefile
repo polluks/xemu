@@ -1,7 +1,7 @@
 ## Collection of *simple* emulators of some 8 bits machines using SDL2 library,
-## including the Commodore LCD and Commodore 65 too.
+## including the MEGA65, Commodore LCD and Commodore 65.
 ##
-## Copyright (C)2016-2020 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
+## Copyright (C)2016-2022 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -18,13 +18,17 @@
 # Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 
 
-TARGETS	= c65 cvic20 clcd cgeos ep128 mega65 primo tvc
+TARGETS	= c65 cvic20 clcd ep128 mega65 primo tvc
 ARCHS	= native win32 win64
 
 ARCH	= native
 
 all:
 	for t in $(TARGETS) ; do $(MAKE) -C targets/$$t RELEASE=$(RELEASE) || exit 1 ; done
+
+install:
+	$(MAKE) all
+	for t in $(TARGETS) ; do $(MAKE) -C targets/$$t RELEASE=$(RELEASE) install || exit 1 ; done
 
 all-arch:
 	for t in $(TARGETS) ; do for a in $(ARCHS) ; do $(MAKE) -C targets/$$t ARCH=$$a RELEASE=$(RELEASE) || exit 1 ; done ; done
@@ -42,12 +46,10 @@ strip:
 
 all-clean:
 	for t in $(TARGETS) ; do for a in $(ARCHS) ; do $(MAKE) -C targets/$$t ARCH=$$a clean || exit 1 ; done ; done
-	$(MAKE) -C rom clean
 	$(MAKE) -C build/bin clean
 
 distclean:
 	$(MAKE) all-clean
-	$(MAKE) -C rom distclean
 	$(MAKE) -C build/bin/clean
 
 dep:
@@ -55,9 +57,6 @@ dep:
 
 all-dep:
 	for t in $(TARGETS) ; do for a in $(ARCHS) ; do $(MAKE) -C targets/$$t ARCH=$$a dep || exit 1 ; done ; done
-
-roms:
-	$(MAKE) -C rom
 
 deb:
 	$(MAKE) all
@@ -90,4 +89,4 @@ doxypublish:
 config:
 	ARCH=$(ARCH) $(MAKE) -C build/configure
 
-.PHONY: all all-arch clean all-clean roms distclean dep all-dep deb nsi publish doxygen doxypublish config
+.PHONY: all all-arch clean all-clean distclean dep all-dep deb nsi publish doxygen doxypublish config install

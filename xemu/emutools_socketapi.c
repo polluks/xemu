@@ -1,5 +1,5 @@
 /* Part of the Xemu project, please visit: https://github.com/lgblgblgb/xemu
-   Copyright (C)2016-2020 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
+   Copyright (C)2016-2021 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -122,40 +122,40 @@ const char *xemusock_strerror ( int err )
 #endif
 
 
-static int _winsock_init_status = 1;	// 1 = todo, 0 = was OK, -1 = error!
+static int  _winsock_init_status = 1;	// 1 = todo, 0 = was OK, -1 = error!
+static char _winsock_errmsg[512];
 
 
-int xemusock_init ( char *msg )
+const char *xemusock_init ( void )
 {
-	*msg = '\0';
-	if (_winsock_init_status <= 0)
-		return _winsock_init_status;
+	if (_winsock_init_status == 0)
+		return NULL;
+	if (_winsock_init_status < 0)
+		return _winsock_errmsg;
 #ifdef XEMU_ARCH_WIN
 	WSADATA wsa;
 	if (WSAStartup(MAKEWORD(WINSOCK_VERSION_MAJOR, WINSOCK_VERSION_MINOR), &wsa)) {
-		if (msg) {
-			int err = SOCK_ERR();
-			sprintf(msg, "WINSOCK: ERROR: Failed to initialize winsock2, [%d]: %s", err, xemusock_strerror(err));
-		}
+		int err = SOCK_ERR();
+		snprintf(_winsock_errmsg, sizeof _winsock_errmsg, "WINSOCK: ERROR: Failed to initialize winsock2, [%d]: %s", err, xemusock_strerror(err));
 		_winsock_init_status = -1;
-		return -1;
+		DEBUGPRINT("%s" NL, _winsock_errmsg);
+		return _winsock_errmsg;
 	}
 	if (LOBYTE(wsa.wVersion) != WINSOCK_VERSION_MAJOR || HIBYTE(wsa.wVersion) != WINSOCK_VERSION_MINOR) {
 		WSACleanup();
-		if (msg)
-			sprintf(msg,
-				"WINSOCK: ERROR: No suitable winsock API in the implemantion DLL (we need v%d.%d, we got: v%d.%d), windows system error ...",
-				WINSOCK_VERSION_MAJOR, WINSOCK_VERSION_MINOR,
-				HIBYTE(wsa.wVersion), LOBYTE(wsa.wVersion)
-			);
+		snprintf(_winsock_errmsg, sizeof _winsock_errmsg,
+			"WINSOCK: ERROR: No suitable winsock API in the implemantion DLL (we need v%d.%d, we got: v%d.%d), windows system error ...",
+			WINSOCK_VERSION_MAJOR, WINSOCK_VERSION_MINOR,
+			HIBYTE(wsa.wVersion), LOBYTE(wsa.wVersion)
+		);
 		_winsock_init_status = -1;
-		return -1;
+		DEBUGPRINT("%s" NL, _winsock_errmsg);
+		return _winsock_errmsg;
 	}
-	if (msg)
-		sprintf(msg, "WINSOCK: OK: initialized, version %d.%d", HIBYTE(wsa.wVersion), LOBYTE(wsa.wVersion));
+	DEBUGPRINT("WINSOCK: OK: initialized, version %d.%d" NL, HIBYTE(wsa.wVersion), LOBYTE(wsa.wVersion));
 #endif
 	_winsock_init_status = 0;
-	return 0;
+	return NULL;
 }
 
 
@@ -171,12 +171,20 @@ void xemusock_uninit ( void )
 }
 
 
-void xemusock_fill_servaddr_for_inet ( struct sockaddr_in *servaddr, unsigned int ip_netlong, int port )
+void xemusock_fill_servaddr_for_inet_ip_netlong ( struct sockaddr_in *servaddr, unsigned int ip_netlong, int port )
 {
 	memset(servaddr, 0, sizeof(struct sockaddr_in));
+	if (ip_netlong == 0)
+		ip_netlong = INADDR_ANY;
 	servaddr->sin_addr.s_addr = ip_netlong;
 	servaddr->sin_port = htons(port);
 	servaddr->sin_family = AF_INET;
+}
+
+
+void xemusock_fill_servaddr_for_inet_ip_native ( struct sockaddr_in *servaddr, unsigned int ip_native, int port )
+{
+	xemusock_fill_servaddr_for_inet_ip_netlong(servaddr, htonl(ip_native), port);
 }
 
 
@@ -315,7 +323,64 @@ int xemusock_recv ( xemusock_socket_t sock, void *buffer, int length, int *xerrn
 }
 
 
-int xemusock_select_1 ( xemusock_socket_t sock, int usec, int what )
+int xemusock_bind ( xemusock_socket_t sock, struct sockaddr *addr, xemusock_socklen_t addrlen, int *xerrno )
+{
+	int ret = bind(sock, addr, addrlen);
+	if (ret) {
+		if (xerrno)
+			*xerrno = SOCK_ERR();
+		return -1;
+	} else
+		return 0;
+}
+
+
+int xemusock_listen ( xemusock_socket_t sock, int backlog, int *xerrno )
+{
+	int ret = listen(sock, backlog);
+	if (ret) {
+		if (xerrno)
+			*xerrno = SOCK_ERR();
+		return -1;
+	} else
+		return 0;
+}
+
+
+xemusock_socket_t xemusock_accept ( xemusock_socket_t sock, struct sockaddr *addr, xemusock_socklen_t *addrlen, int *xerrno )
+{
+	xemusock_socket_t ret = accept(sock, addr, addrlen);
+	if (ret == XS_INVALID_SOCKET) {
+		if (xerrno)
+			*xerrno = SOCK_ERR();
+	}
+	return ret;
+}
+
+
+int xemusock_setsockopt ( xemusock_socket_t sock, int level, int option, const void *value, int len, int *xerrno )
+{
+	if (setsockopt(sock, level, option, (const char*)value, len)) {
+		if (xerrno)
+			*xerrno = SOCK_ERR();
+		return -1;
+	} else
+		return 0;
+}
+
+
+int xemusock_setsockopt_reuseaddr ( xemusock_socket_t sock, int *xerrno )
+{
+#ifdef XEMU_ARCH_WIN
+	static const BOOL on = 1;
+#else
+	static const int on = 1;
+#endif
+	return xemusock_setsockopt(sock, SOL_SOCKET, SO_REUSEADDR, &on, sizeof on, xerrno);
+}
+
+
+int xemusock_select_1 ( xemusock_socket_t sock, int usec, int what, int *xerrno )
 {
 	for (;;) {
 		int ret;
@@ -337,6 +402,8 @@ int xemusock_select_1 ( xemusock_socket_t sock, int usec, int what )
 			int err = SOCK_ERR();
 			if (err == XSEINTR)
 				continue;
+			if (xerrno)
+				*xerrno = SOCK_ERR();
 			return -1;
 		}
 		if (ret == 0)

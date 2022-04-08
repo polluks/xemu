@@ -3,9 +3,9 @@
 #define CPU_65CE02
 #define MEGA65
 #define CPU65_65CE02_6502NMOS_TIMING_EMULATION
-#define XEMU_SNAPSHOT_SUPPORT "Mega-65"
+#define XEMU_SNAPSHOT_SUPPORT "MEGA65"
 #define CPU_STEP_MULTI_OPS
-//#define DEBUG_CPU
+#define DEBUG_CPU
 #define CPU_CUSTOM_MEMORY_FUNCTIONS_H "cpu_custom_functions.h"
 #define CPU65 cpu65
 //#define CPU65_DISCRETE_PF_NZ
@@ -14,18 +14,20 @@
 
 #define HAVE_XEMU_EXEC_API
 
-#ifdef HAVE_SOCKET_OS_API
-//#define HAVE_XEMU_SOCKET_API
-//#define HAVE_XEMU_UMON
+#ifdef XEMU_HAS_SOCKET_API
+#define HAS_UARTMON_SUPPORT
+#define HAVE_XEMU_UMON
 #endif
 #define HAVE_XEMU_INSTALLER
 
 #ifndef XEMU_ARCH_HTML
 #define CONFIG_DROPFILE_CALLBACK
 #define VIRTUAL_DISK_IMAGE_SUPPORT
-//#define BASIC_TEXT_SUPPORT
+//#define CBM_BASIC_TEXT_SUPPORT
 #define SD_CONTENT_SUPPORT
 #endif
+
+//#define TRACE_NEXT_SUPPORT
 
 /* Globally: XEMU_INLINE hints gcc to always inline a function. Using this define switches that behaviour off, defaulting to standard "inline" (as it would be without using gcc as well) */
 //#define DO_NOT_FORCE_INLINE
@@ -41,7 +43,9 @@
 #define M65_CPU_NMOS_ONLY_BUG_BCD			1
 
 // Currently only Linux-TAP device is supported to have emulated ethernet controller
-#ifdef XEMU_ARCH_LINUX
+// Also it seems ARM Raspbian/etc does have problem with ethertap, so let's not allow
+// ethertap for ARM CPU, it's faulty there!
+#if defined(XEMU_ARCH_LINUX) && !defined(XEMU_CPU_ARM)
 #define HAVE_ETHERTAP
 #endif
 
@@ -60,4 +64,12 @@
 #define C65_KEYBOARD
 #define HID_KBD_MAP_CFG_SUPPORT
 
+#ifndef XEMU_ARCH_HTML
+#define XEMU_USE_LODEPNG
+#define XEMU_FILES_SCREENSHOT_SUPPORT
+#endif
+
 #define CONFIG_EMSCRIPTEN_OK
+
+#define XEMU_CONFIGDB_SUPPORT
+#define XEMU_OSD_SUPPORT

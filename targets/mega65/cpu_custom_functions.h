@@ -1,6 +1,6 @@
 /* A work-in-progess MEGA65 (Commodore 65 clone origins) emulator
    Part of the Xemu project, please visit: https://github.com/lgblgblgb/xemu
-   Copyright (C)2016-2019 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
+   Copyright (C)2016-2021 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -72,8 +72,8 @@ extern int cpu_rmw_old_data;
 
 extern void   cpu65_write_linear_opcode_callback ( Uint8 data );
 extern Uint8  cpu65_read_linear_opcode_callback  ( void );
-extern void   cpu65_write_linear_long_opcode_callback ( Uint32 data );
-extern Uint32 cpu65_read_linear_long_opcode_callback  ( void );
+extern void   cpu65_write_linear_long_opcode_callback ( const Uint8 index, Uint32 data );
+extern Uint32 cpu65_read_linear_long_opcode_callback  ( const Uint8 index );
 
 extern void  cpu65_illegal_opcode_callback ( void );
 
@@ -94,7 +94,7 @@ CPU_CUSTOM_FUNCTIONS_INLINE_DECORATOR void  cpu65_write_paged_callback ( Uint8 p
 // It has no inpact in case of normal RAM, but it *does* with an I/O register in some cases!
 // CMOS line of 65xx (probably 65CE02 as well?) seems not write twice, but read twice.
 // However this leads to incompatibilities, as some software used the RMW behavour by intent.
-// Thus Mega65 fixed the problem to "restore" the old way of RMW behaviour.
+// Thus MEGA65 fixed the problem to "restore" the old way of RMW behaviour.
 // I also follow this path here, even if it's *NOT* what 65CE02 would do actually!
 CPU_CUSTOM_FUNCTIONS_INLINE_DECORATOR void  cpu65_write_rmw_callback ( Uint16 addr, Uint8 old_data, Uint8 new_data ) {
 	cpu_rmw_old_data = old_data;

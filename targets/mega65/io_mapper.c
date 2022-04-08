@@ -1,7 +1,7 @@
 /* A work-in-progess MEGA65 (Commodore 65 clone origins) emulator
    Part of the Xemu project, please visit: https://github.com/lgblgblgb/xemu
    I/O decoding part (used by memory_mapper.h and DMA mainly)
-   Copyright (C)2016-2020 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
+   Copyright (C)2016-2022 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -21,26 +21,30 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
 #include "io_mapper.h"
 #include "memory_mapper.h"
 #include "xemu/f011_core.h"
-#include "xemu/f018_core.h"
-#include "xemu/emutools_hid.h"
-//#include "xemu/cpu65.h"
+#include "dma65.h"
 #include "vic4.h"
 #include "vic4_palette.h"
 #include "sdcard.h"
 #include "hypervisor.h"
 #include "ethernet65.h"
 #include "input_devices.h"
+#include "matrix_mode.h"
 #include "audio65.h"
+#include "configdb.h"
+#include "mega65.h"
 
 
 int    fpga_switches = 0;		// State of FPGA board switches (bits 0 - 15), set switch 12 (hypervisor serial output)
 Uint8  D6XX_registers[0x100];		// mega65 specific D6XX range, excluding the UART part (not used here!)
 Uint8  D7XX[0x100];			// FIXME: hack for future M65 stuffs like ALU! FIXME: no snapshot on these!
 struct Cia6526 cia1, cia2;		// CIA emulation structures for the two CIAs
-static int mouse_x = 0, mouse_y = 0;	// for our primitive C1351 mouse emulation
-int    cpu_linear_memory_addressing_is_enabled = 0;	// used by the CPU emu as well!
+int    cpu_mega65_opcodes = 0;	// used by the CPU emu as well!
 static int bigmult_valid_result = 0;
-int port_d607 = 0xFF;	// ugly hack to be able to read extra char row of C65
+int    port_d607 = 0xFF;			// ugly hack to be able to read extra char row of C65 keyboard
+
+
+static const Uint8 fpga_firmware_version[] = { 'X','e','m','u' };
+static const Uint8 cpld_firmware_version[] = { 'N','o','w','!' };
 
 
 #define RETURN_ON_IO_READ_NOT_IMPLEMENTED(func, fb) \
@@ -50,36 +54,30 @@ int port_d607 = 0xFF;	// ugly hack to be able to read extra char row of C65
 	do { DEBUG("IO: NOT IMPLEMENTED write (emulator lacks feature), %s $%04X with data $%02X" NL, func, addr, data); \
 	return; } while(0)
 
-// Address of the "big" multiplier within the $D7XX area (byte only)
-#define BIGMULT_ADDR	0x70
 
-
-
-static void update_hw_multiplier ( void )
+static XEMU_INLINE void update_hw_multiplier ( void )
 {
-	D7XX[BIGMULT_ADDR + 3] &= 0x01;
-	D7XX[BIGMULT_ADDR + 6] &= 0x03;
-	D7XX[BIGMULT_ADDR + 7] =  0x00;
-	register Uint64 result = (Uint64)(
-		((Uint32) D7XX[BIGMULT_ADDR + 0]      ) |
-		((Uint32) D7XX[BIGMULT_ADDR + 1] <<  8) |
-		((Uint32) D7XX[BIGMULT_ADDR + 2] << 16) |
-		((Uint32) D7XX[BIGMULT_ADDR + 3] << 24)
-	) * (Uint64)(
-		((Uint32) D7XX[BIGMULT_ADDR + 4]      ) |
-		((Uint32) D7XX[BIGMULT_ADDR + 5] <<  8) |
-		((Uint32) D7XX[BIGMULT_ADDR + 6] << 16) |
-		((Uint32) D7XX[BIGMULT_ADDR + 7] << 24)
-	);
-	D7XX[BIGMULT_ADDR + 0x8] = (result      ) & 0xFF;
-	D7XX[BIGMULT_ADDR + 0x9] = (result >>  8) & 0xFF;
-	D7XX[BIGMULT_ADDR + 0xA] = (result >> 16) & 0xFF;
-	D7XX[BIGMULT_ADDR + 0xB] = (result >> 24) & 0xFF;
-	D7XX[BIGMULT_ADDR + 0xC] = (result >> 32) & 0xFF;
-	D7XX[BIGMULT_ADDR + 0xD] = (result >> 40) & 0xFF;
-	D7XX[BIGMULT_ADDR + 0xE] = 0;
-	D7XX[BIGMULT_ADDR + 0xF] = 0;
+	register const Uint32 input_a = xemu_u8p_to_u32le(D7XX + 0x70);
+	register const Uint32 input_b = xemu_u8p_to_u32le(D7XX + 0x74);
+	// Set flag to valid, so we don't relculate each time
+	// (this variable is used to avoid calling this function if no change was
+	// done on input_a and input_b)
 	bigmult_valid_result = 1;
+	// --- Do the product, multiplication ---
+	xemu_u64le_to_u8p(D7XX + 0x78, (Uint64)input_a * (Uint64)input_b);
+	// --- Do the quotient, divide ---
+	// ... but we really don't want to divide by zero, so let's test this
+	if (XEMU_LIKELY(input_b)) {
+		// input_b is non-zero, it's OK to divide
+		xemu_u64le_to_u8p(D7XX + 0x68, (Uint64)((Uint64)input_a << 32) / (Uint64)input_b);
+	} else {
+		// If we divide by zero, according to the VHDL,
+		// we set all bits to '1' in the result, that is $FF
+		// for all registers of div output. Probably it can be
+		// interpreted as some kind of "fixed point infinity"
+		// or just a measure of error with this special answer.
+		memset(D7XX + 0x68, 0xFF, 8);
+	}
 }
 
 
@@ -142,15 +140,9 @@ Uint8 io_read ( unsigned int addr )
 		case 0x15:	// $D500-$D5FF ~ C65 I/O mode
 		case 0x34:	// $D400-$D4FF ~ M65 I/O mode
 		case 0x35:	// $D500-$D5FF ~ M65 I/O mode
-			if (is_mouse_grab()) {		// Rudimentary C1351 mouse emulation (on SID#1) ...
-				switch (addr & 0x5F) {
-					case 0x19:
-						mouse_x = (mouse_x + hid_read_mouse_rel_x(-31, 31)) & 63;
-						return mouse_x << 1;
-					case 0x1A:
-						mouse_y = (mouse_y - hid_read_mouse_rel_y(-31, 31)) & 63;
-						return mouse_y << 1;
-				}
+			switch (addr & 0x5F) {
+				case 0x19: return get_mouse_x_via_sid();
+				case 0x1A: return get_mouse_y_via_sid();
 			}
 			return 0xFF;
 		case 0x16:	// $D600-$D6FF ~ C65 I/O mode
@@ -159,18 +151,18 @@ Uint8 io_read ( unsigned int addr )
 			addr &= 0xFF;
 			if (addr < 9)
 				RETURN_ON_IO_READ_NOT_IMPLEMENTED("UART", 0xFF);	// FIXME: UART is not yet supported!
-			if (addr >= 0x80 && addr <= 0x93)	// SDcard controller etc of Mega65
+			if (addr >= 0x80 && addr <= 0x93)	// SDcard controller etc of MEGA65
 				return sdcard_read_register(addr - 0x80);
 			if ((addr & 0xF0) == 0xE0)
 				return eth65_read_reg(addr);
 			switch (addr) {
 				case 0x7C:
-					return 0;			// emulate the "UART is ready" situation (used by newer kickstarts around from v0.11 or so)
+					return 0;			// emulate the "UART is ready" situation (used by some HICKUPs around from v0.11 or so)
 				case 0x7E:				// upgraded hypervisor signal
 					if (D6XX_registers[0x7E] == 0x80)	// 0x80 means for Xemu (not for a real M65!): ask the user!
 						D6XX_registers[0x7E] = QUESTION_WINDOW(
-							"Not upgraded yet, it can do it|Already upgraded, I test kicked state",
-							"Kickstart asks hypervisor upgrade state. What do you want Xemu to answer?\n"
+							"Not upgraded yet, it can do it|Already upgraded, I test hicked state",
+							"HICKUP asks hypervisor upgrade state. What do you want Xemu to answer?\n"
 							"(don't worry, it won't be asked again without RESET)"
 						) ? 0xFF : 0;
 					return D6XX_registers[0x7E];
@@ -184,8 +176,28 @@ Uint8 io_read ( unsigned int addr )
 					return hwa_kbd_get_last();
 				case 0x11:				// modifier keys on kbd being used
 					return hwa_kbd_get_modifiers();
+				case 0x13:				// $D613: direct access to the kbd matrix, read selected row (set by writing $D614), bit 0 = key pressed
+					return kbd_directscan_query(D6XX_registers[0x14]);	// for further explanations please see this function in input_devices.c
+				case 0x29:
+					return configdb.mega65_model;		// MEGA65 model
+				case 0x0F:
+					// D60F bit 5, real hardware (1), emulation (0), other bits are not emulated yet by Xemu, so I give simply zero
+					return 0;
+				case 0x1B:
+					// D61B amiga / 1531 mouse auto-detect. FIXME XXX what value we should return at this point? :-O
+					return 0xFF;
+				case 0x32: // D632-D635: FPGA firmware ID
+				case 0x33:
+				case 0x34:
+				case 0x35:
+					return fpga_firmware_version[addr - 0x32];
+				case 0x2C: // D62C-D62F: CPLD firmware ID
+				case 0x2D:
+				case 0x2E:
+				case 0x2F:
+					return cpld_firmware_version[addr - 0x2C];
 				default:
-					DEBUG("MEGA65: reading Mega65 specific I/O @ $D6%02X result is $%02X" NL, addr, D6XX_registers[addr]);
+					DEBUG("MEGA65: reading MEGA65 specific I/O @ $D6%02X result is $%02X" NL, addr, D6XX_registers[addr]);
 					return D6XX_registers[addr];
 			}
 		case 0x17:	// $D700-$D7FF ~ C65 I/O mode
@@ -194,8 +206,11 @@ Uint8 io_read ( unsigned int addr )
 		case 0x37:	// $D700-$D7FF ~ M65 I/O mode
 			// FIXME: this is probably very bad! I guess DMA does not decode for every 16 addresses ... Proposed fix is here:
 			addr &= 0xFF;
-			if (addr < 16)
+			if (addr < 15)		// FIXME!!!! 0x0F was part of DMA reg array, but it seems now used by divisor busy stuff??
 				return dma_read_reg(addr & 0xF);
+			if (addr == 0x0F)
+				return 0;	// FIXME: D70F bit 7 = 32/32 bits divisor busy flag, bit 6 = 32*32 mult busy flag. We're never busy, so the zero. But the OTHER bits??? Any purpose of those??
+			// ;) FIXME this is LAZY not to decode if we need to update bigmult at all ;-P
 			if (XEMU_UNLIKELY(!bigmult_valid_result))
 				update_hw_multiplier();
 			return D7XX[addr];
@@ -221,43 +236,31 @@ Uint8 io_read ( unsigned int addr )
 		/* $DC00-$DCFF: CIA#1, EXTENDED COLOUR RAM */
 		/* --------------------------------------- */
 		case 0x0C:	// $DC00-$DCFF ~ C64 I/O mode
-			return (vic_registers[0x30] & 1) ? colour_ram[addr - 0x0800] : cia_read(&cia1, addr & 0xF);
 		case 0x1C:	// $DC00-$DCFF ~ C65 I/O mode
-			return (vic_registers[0x30] & 1) ? colour_ram[addr - 0x1800] : cia_read(&cia1, addr & 0xF);
 		case 0x3C:	// $DC00-$DCFF ~ M65 I/O mode
-			return (vic_registers[0x30] & 1) ? colour_ram[addr - 0x3800] : cia_read(&cia1, addr & 0xF);
+			return (vic_registers[0x30] & 1) ? colour_ram[0x400 + (addr & 0xFF)] : cia_read(&cia1, addr & 0xF);
 		/* --------------------------------------- */
 		/* $DD00-$DDFF: CIA#2, EXTENDED COLOUR RAM */
 		/* --------------------------------------- */
 		case 0x0D:	// $DD00-$DDFF ~ C64 I/O mode
-			return (vic_registers[0x30] & 1) ? colour_ram[addr - 0x0800] : cia_read(&cia2, addr & 0xF);
 		case 0x1D:	// $DD00-$DDFF ~ C65 I/O mode
-			return (vic_registers[0x30] & 1) ? colour_ram[addr - 0x1800] : cia_read(&cia2, addr & 0xF);
 		case 0x3D:	// $DD00-$DDFF ~ M65 I/O mode
-			return (vic_registers[0x30] & 1) ? colour_ram[addr - 0x3800] : cia_read(&cia2, addr & 0xF);
-		/* --------------------------------------------------- */
-		/* $DE00-$DFFF: IO exp, EXTENDED COLOUR RAM, SD buffer */
-		/* --------------------------------------------------- */
+			return (vic_registers[0x30] & 1) ? colour_ram[0x500 + (addr & 0xFF)] : cia_read(&cia2, addr & 0xF);
+		/* ----------------------------------------------------- */
+		/* $DE00-$DFFF: IO exp, EXTENDED COLOUR RAM, disk buffer */
+		/* ----------------------------------------------------- */
 		case 0x0E:	// $DE00-$DEFF ~ C64 I/O mode
 		case 0x0F:	// $DF00-$DFFF ~ C64 I/O mode
-			if (vic_registers[0x30] & 1)
-				return colour_ram[addr - 0x0800];
-			if (XEMU_LIKELY(sd_status & SD_ST_MAPPED))
-				return sd_buffer[addr - 0x0E00];
-			return 0xFF;	// I/O exp is not supported
 		case 0x1E:	// $DE00-$DEFF ~ C65 I/O mode
 		case 0x1F:	// $DF00-$DFFF ~ C65 I/O mode
-			if (vic_registers[0x30] & 1)
-				return colour_ram[addr - 0x1800];
-			if (XEMU_LIKELY(sd_status & SD_ST_MAPPED))
-				return sd_buffer[addr - 0x1E00];
-			return 0xFF;	// I/O exp is not supported
 		case 0x3E:	// $DE00-$DEFF ~ M65 I/O mode
 		case 0x3F:	// $DF00-$DFFF ~ M65 I/O mode
+			// FIXME: is it really true for *ALL* I/O modes, that colour RAM expansion to 2K and
+			// disk buffer I/O mapping works in all of them??
 			if (vic_registers[0x30] & 1)
-				return colour_ram[addr - 0x3800];
+				return colour_ram[0x600 + (addr & 0x1FF)];
 			if (XEMU_LIKELY(sd_status & SD_ST_MAPPED))
-				return sd_buffer[addr - 0x3E00];
+				return disk_buffer_io_mapped[addr & 0x1FF];
 			return 0xFF;	// I/O exp is not supported
 		/* --------------------------------------------------------------- */
 		/* $2xxx I/O area is not supported: FIXME: what is that for real?! */
@@ -346,7 +349,10 @@ void io_write ( unsigned int addr, Uint8 data )
 		case 0x15:	// $D500-$D5FF ~ C65 I/O mode
 		case 0x34:	// $D400-$D4FF ~ M65 I/O mode
 		case 0x35:	// $D500-$D5FF ~ M65 I/O mode
-			sid_write_reg(addr & 0x40 ? &sid2 : &sid1, addr & 31, data);
+			//sid_write_reg(addr & 0x40 ? &sid[1] : &sid[0], addr & 31, data);
+			//DEBUGPRINT("SID #%d reg#%02X data=%02X" NL, (addr >> 5) & 3, addr & 0x1F, data);
+			//sid_write_reg(&sid[(addr >> 5) & 3], addr & 0x1F, data);
+			audio65_sid_write(addr, data); // We need full addr, audio65_sid_write will decide the SID instance from that!
 			return;
 		case 0x16:	// $D600-$D6FF ~ C65 I/O mode
 			if ((addr & 0xFF) == 0x07) {
@@ -359,7 +365,7 @@ void io_write ( unsigned int addr, Uint8 data )
 			if (!in_hypervisor && addr >= 0x40 && addr <= 0x7F) {
 				// In user mode, writing to $D640-$D67F (in VIC4 iomode) causes to enter hypervisor mode with
 				// the trap number given by the offset in this range
-				hypervisor_enter(addr & 0x3F);
+				hypervisor_enter_via_write_trap(addr & 0x3F);
 				return;
 			}
 			D6XX_registers[addr] = data;	// I guess, the actual write won't happens if it was trapped, so I moved this to here after the previous "if"
@@ -370,7 +376,7 @@ void io_write ( unsigned int addr, Uint8 data )
 				} else
 					RETURN_ON_IO_WRITE_NOT_IMPLEMENTED("UART");	// FIXME: UART is not yet supported!
 			}
-			if (addr >= 0x80 && addr <= 0x93) {			// SDcard controller etc of Mega65
+			if (addr >= 0x80 && addr <= 0x93) {			// SDcard controller etc of MEGA65
 				sdcard_write_register(addr - 0x80, data);
 				return;
 			}
@@ -382,28 +388,45 @@ void io_write ( unsigned int addr, Uint8 data )
 				case 0x10:	// ASCII kbd last press value to zero whatever the written data would be
 					hwa_kbd_move_next();
 					return;
+				case 0x11:
+					hwa_kbd_disable_selector(data & 0x80);
+					return;
+				case 0x15:
+				case 0x16:
+				case 0x17:
+					virtkey(addr - 0x15, data & 0x7F);
+					return;
+				case 0x72:	// "$D672.6 HCPU:MATRIXEN Enable composited Matrix Mode, and disable UART access to serial monitor."
+					matrix_mode_toggle(data & 0x40);
+					return;
 				case 0x7C:					// hypervisor serial monitor port
 					hypervisor_serial_monitor_push_char(data);
 					return;
 				case 0x7D:
 					DEBUG("MEGA65: features set as $%02X" NL, data);
-					if ((data & 2) != cpu_linear_memory_addressing_is_enabled) {
-						DEBUG("MEGA65: 32-bit linear addressing opcodes have been turned %s." NL, data & 2 ? "ON" : "OFF");
-						cpu_linear_memory_addressing_is_enabled = data & 2;
+					if ((data & 2) != cpu_mega65_opcodes) {
+						DEBUG("MEGA65: enhanced opcodes have been turned %s." NL, data & 2 ? "ON" : "OFF");
+						cpu_mega65_opcodes = data & 2;
 					}
 					if ((data & 4) != rom_protect) {
 						DEBUG("MEGA65: ROM protection has been turned %s." NL, data & 4 ? "ON" : "OFF");
 						rom_protect = data & 4;
 					}
-					force_fast = data & 16;
 					return;
 				case 0x7E:
 					D6XX_registers[0x7E] = 0xFF;	// iomap.txt: "Hypervisor already-upgraded bit (sets permanently)"
-					DEBUG("MEGA65: Writing already-kicked register $%04X!" NL, addr);
-					hypervisor_debug_invalidate("$D67E was written, maybe new kickstart will boot!");
+					DEBUG("MEGA65: Writing already-hicked register $%04X!" NL, addr);
+					hypervisor_debug_invalidate("$D67E was written, maybe new HICKUP will boot!");
 					return;
 				case 0x7F:	// hypervisor leave
 					hypervisor_leave();	// 0x67F is also handled on enter's state, so it will be executed only in_hypervisor mode, which is what I want
+					return;
+				case 0xCF:
+					if (data == 0x42) {
+						if (ARE_YOU_SURE("FPGA reconfiguration request. System must be reset.\nIs it OK to do now?\nAnswering NO may crash your program requesting this task though,\nor can result in endless loop of trying.", ARE_YOU_SURE_DEFAULT_YES)) {
+							reset_mega65();
+						}
+					}
 					return;
 				default:
 					DEBUG("MEGA65: this I/O port is not emulated in Xemu yet: $D6%02X (tried to be written with $%02X)" NL, addr, data);
@@ -419,7 +442,8 @@ void io_write ( unsigned int addr, Uint8 data )
 			addr &= 0xFF;
 			if (addr < 16)
 				dma_write_reg(addr & 0xF, data);
-			else if (XEMU_UNLIKELY((addr & 0xF0) == BIGMULT_ADDR))
+			//else if (XEMU_UNLIKELY((addr & 0xF0) == BIGMULT_ADDR))
+			else if (addr >= 0x68 && addr <= 0x7F)
 				bigmult_valid_result = 0;
 			D7XX[addr] = data;
 			return;
@@ -448,20 +472,10 @@ void io_write ( unsigned int addr, Uint8 data )
 		/* $DC00-$DCFF: CIA#1, EXTENDED COLOUR RAM */
 		/* --------------------------------------- */
 		case 0x0C:	// $DC00-$DCFF ~ C64 I/O mode
-			if (vic_registers[0x30] & 1)
-				colour_ram[addr - 0x0800] = data;
-			else
-				cia_write(&cia1, addr & 0xF, data);
-			return;
 		case 0x1C:	// $DC00-$DCFF ~ C65 I/O mode
-			if (vic_registers[0x30] & 1)
-				colour_ram[addr - 0x1800] = data;
-			else
-				cia_write(&cia1, addr & 0xF, data);
-			return;
 		case 0x3C:	// $DC00-$DCFF ~ M65 I/O mode
 			if (vic_registers[0x30] & 1)
-				colour_ram[addr - 0x3800] = data;
+				colour_ram[0x400 + (addr & 0xFF)] = data;
 			else
 				cia_write(&cia1, addr & 0xF, data);
 			return;
@@ -469,56 +483,30 @@ void io_write ( unsigned int addr, Uint8 data )
 		/* $DD00-$DDFF: CIA#2, EXTENDED COLOUR RAM */
 		/* --------------------------------------- */
 		case 0x0D:	// $DD00-$DDFF ~ C64 I/O mode
-			if (vic_registers[0x30] & 1)
-				colour_ram[addr - 0x0800] = data;
-			else
-				cia_write(&cia2, addr & 0xF, data);
-			return;
 		case 0x1D:	// $DD00-$DDFF ~ C65 I/O mode
-			if (vic_registers[0x30] & 1)
-				colour_ram[addr - 0x1800] = data;
-			else
-				cia_write(&cia2, addr & 0xF, data);
-			return;
 		case 0x3D:	// $DD00-$DDFF ~ M65 I/O mode
 			if (vic_registers[0x30] & 1)
-				colour_ram[addr - 0x3800] = data;
+				colour_ram[0x500 + (addr & 0xFF)] = data;
 			else
 				cia_write(&cia2, addr & 0xF, data);
 			return;
-		/* --------------------------------------------------- */
-		/* $DE00-$DFFF: IO exp, EXTENDED COLOUR RAM, SD buffer */
-		/* --------------------------------------------------- */
+		/* ----------------------------------------------------- */
+		/* $DE00-$DFFF: IO exp, EXTENDED COLOUR RAM, disk buffer */
+		/* ----------------------------------------------------- */
 		case 0x0E:	// $DE00-$DEFF ~ C64 I/O mode
 		case 0x0F:	// $DF00-$DFFF ~ C64 I/O mode
-			if (vic_registers[0x30] & 1) {
-				colour_ram[addr - 0x0800] = data;
-				return;
-			}
-			if (XEMU_LIKELY(sd_status & SD_ST_MAPPED)) {
-				sd_buffer[addr - 0x0E00] = data;
-				return;
-			}
-			return;		// I/O exp is not supported
 		case 0x1E:	// $DE00-$DEFF ~ C65 I/O mode
 		case 0x1F:	// $DF00-$DFFF ~ C65 I/O mode
-			if (vic_registers[0x30] & 1) {
-				colour_ram[addr - 0x1800] = data;
-				return;
-			}
-			if (XEMU_LIKELY(sd_status & SD_ST_MAPPED)) {
-				sd_buffer[addr - 0x1E00] = data;
-				return;
-			}
-			return;		// I/O exp is not supported
 		case 0x3E:	// $DE00-$DEFF ~ M65 I/O mode
 		case 0x3F:	// $DF00-$DFFF ~ M65 I/O mode
+			// FIXME: is it really true for *ALL* I/O modes, that colour RAM expansion to 2K and
+			// disk buffer I/O mapping works in all of them??
 			if (vic_registers[0x30] & 1) {
-				colour_ram[addr - 0x3800] = data;
+				colour_ram[0x600 + (addr & 0x1FF)] = data;
 				return;
 			}
 			if (XEMU_LIKELY(sd_status & SD_ST_MAPPED)) {
-				sd_buffer[addr - 0x3E00] = data;
+				disk_buffer_io_mapped[addr & 0x1FF] = data;
 				return;
 			}
 			return;		// I/O exp is not supported
@@ -532,7 +520,6 @@ void io_write ( unsigned int addr, Uint8 data )
 			FATAL("Xemu internal error: undecoded I/O area writing for address $(%X)%03X and data $%02X", addr >> 8, addr & 0xFFF, data);
 	}
 }
-
 
 
 Uint8 io_dma_reader ( int addr ) {

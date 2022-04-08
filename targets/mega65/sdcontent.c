@@ -1,6 +1,6 @@
 /* A work-in-progess MEGA65 (Commodore 65 clone origins) emulator
    Part of the Xemu project, please visit: https://github.com/lgblgblgb/xemu
-   Copyright (C)2016-2020 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
+   Copyright (C)2016-2022 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -23,9 +23,9 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
 #include "sdcard.h"
 #include "fat32.h"
 #include "mega65.h"
-// to get D81_SIZE
 #include "xemu/d81access.h"
 #include "xemu/emutools_files.h"
+#include "rom.h"
 
 #include "memcontent.h"
 
@@ -117,45 +117,6 @@ static const Uint8 boot_bytes[258] = {
 	0x59, 0x20, 0x41, 0x47, 0x41, 0x49, 0x4e, 0x2e,
 	0x0a, 0x0a, 0x52, 0x45, 0x41, 0x44, 0x59, 0x2e,
 	0x0d, 0x0a
-};
-static const Uint8 d81_at_61800[] = {
-	/* 61800 */ 0x28,0x03,0x44,0x00,0x44,0x45,0x4d,0x4f,0x45,0x4d,0x50,0x54,0x59,0xa0,0xa0,0xa0,	/* | (.D.DEMOEMPTY...| */
-	/* 61810 */ 0xa0,0xa0,0xa0,0xa0,0xa0,0xa0,0x30,0x30,0xa0,0x33,0x44,0xa0,0xa0			/* | ......00.3D.....| */
-};
-static const Uint8 d81_at_61900[] = {
-	/* 61900 */ 0x28,0x02,0x44,0xbb,0x30,0x30,0xc0,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,	/* | (.D.00..........| */
-	/* 61910 */ 0x28,0xff,0xff,0xff,0xff,0xff,0x28,0xff,0xff,0xff,0xff,0xff,0x28,0xff,0xff,0xff,	/* | (.....(.....(...| */
-	/* 61920 */ 0xff,0xff,0x28,0xff,0xff,0xff,0xff,0xff,0x28,0xff,0xff,0xff,0xff,0xff,0x28,0xff,	/* | ..(.....(.....(.| */
-	/* 61930 */ 0xff,0xff,0xff,0xff,0x28,0xff,0xff,0xff,0xff,0xff,0x28,0xff,0xff,0xff,0xff,0xff,	/* | ....(.....(.....| */
-	/* 61940 */ 0x28,0xff,0xff,0xff,0xff,0xff,0x28,0xff,0xff,0xff,0xff,0xff,0x28,0xff,0xff,0xff,	/* | (.....(.....(...| */
-	/* 61950 */ 0xff,0xff,0x28,0xff,0xff,0xff,0xff,0xff,0x28,0xff,0xff,0xff,0xff,0xff,0x28,0xff,	/* | ..(.....(.....(.| */
-	/* 61960 */ 0xff,0xff,0xff,0xff,0x28,0xff,0xff,0xff,0xff,0xff,0x28,0xff,0xff,0xff,0xff,0xff,	/* | ....(.....(.....| */
-	/* 61970 */ 0x28,0xff,0xff,0xff,0xff,0xff,0x28,0xff,0xff,0xff,0xff,0xff,0x28,0xff,0xff,0xff,	/* | (.....(.....(...| */
-	/* 61980 */ 0xff,0xff,0x28,0xff,0xff,0xff,0xff,0xff,0x28,0xff,0xff,0xff,0xff,0xff,0x28,0xff,	/* | ..(.....(.....(.| */
-	/* 61990 */ 0xff,0xff,0xff,0xff,0x28,0xff,0xff,0xff,0xff,0xff,0x28,0xff,0xff,0xff,0xff,0xff,	/* | ....(.....(.....| */
-	/* 619a0 */ 0x28,0xff,0xff,0xff,0xff,0xff,0x28,0xff,0xff,0xff,0xff,0xff,0x28,0xff,0xff,0xff,	/* | (.....(.....(...| */
-	/* 619b0 */ 0xff,0xff,0x28,0xff,0xff,0xff,0xff,0xff,0x28,0xff,0xff,0xff,0xff,0xff,0x28,0xff,	/* | ..(.....(.....(.| */
-	/* 619c0 */ 0xff,0xff,0xff,0xff,0x28,0xff,0xff,0xff,0xff,0xff,0x28,0xff,0xff,0xff,0xff,0xff,	/* | ....(.....(.....| */
-	/* 619d0 */ 0x28,0xff,0xff,0xff,0xff,0xff,0x28,0xff,0xff,0xff,0xff,0xff,0x28,0xff,0xff,0xff,	/* | (.....(.....(...| */
-	/* 619e0 */ 0xff,0xff,0x28,0xff,0xff,0xff,0xff,0xff,0x28,0xff,0xff,0xff,0xff,0xff,0x28,0xff,	/* | ..(.....(.....(.| */
-	/* 619f0 */ 0xff,0xff,0xff,0xff,0x28,0xff,0xff,0xff,0xff,0xff,0x24,0xf0,0xff,0xff,0xff,0xff,	/* | ....(.....$.....| */
-	/* 61a00 */ 0x00,0xff,0x44,0xbb,0x30,0x30,0xc0,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00,	/* | ..D.00..........| */
-	/* 61a10 */ 0x28,0xff,0xff,0xff,0xff,0xff,0x28,0xff,0xff,0xff,0xff,0xff,0x28,0xff,0xff,0xff,	/* | (.....(.....(...| */
-	/* 61a20 */ 0xff,0xff,0x28,0xff,0xff,0xff,0xff,0xff,0x28,0xff,0xff,0xff,0xff,0xff,0x28,0xff,	/* | ..(.....(.....(.| */
-	/* 61a30 */ 0xff,0xff,0xff,0xff,0x28,0xff,0xff,0xff,0xff,0xff,0x28,0xff,0xff,0xff,0xff,0xff,	/* | ....(.....(.....| */
-	/* 61a40 */ 0x28,0xff,0xff,0xff,0xff,0xff,0x28,0xff,0xff,0xff,0xff,0xff,0x28,0xff,0xff,0xff,	/* | (.....(.....(...| */
-	/* 61a50 */ 0xff,0xff,0x28,0xff,0xff,0xff,0xff,0xff,0x28,0xff,0xff,0xff,0xff,0xff,0x28,0xff,	/* | ..(.....(.....(.| */
-	/* 61a60 */ 0xff,0xff,0xff,0xff,0x28,0xff,0xff,0xff,0xff,0xff,0x28,0xff,0xff,0xff,0xff,0xff,	/* | ....(.....(.....| */
-	/* 61a70 */ 0x28,0xff,0xff,0xff,0xff,0xff,0x28,0xff,0xff,0xff,0xff,0xff,0x28,0xff,0xff,0xff,	/* | (.....(.....(...| */
-	/* 61a80 */ 0xff,0xff,0x28,0xff,0xff,0xff,0xff,0xff,0x28,0xff,0xff,0xff,0xff,0xff,0x28,0xff,	/* | ..(.....(.....(.| */
-	/* 61a90 */ 0xff,0xff,0xff,0xff,0x28,0xff,0xff,0xff,0xff,0xff,0x28,0xff,0xff,0xff,0xff,0xff,	/* | ....(.....(.....| */
-	/* 61aa0 */ 0x28,0xff,0xff,0xff,0xff,0xff,0x28,0xff,0xff,0xff,0xff,0xff,0x28,0xff,0xff,0xff,	/* | (.....(.....(...| */
-	/* 61ab0 */ 0xff,0xff,0x28,0xff,0xff,0xff,0xff,0xff,0x28,0xff,0xff,0xff,0xff,0xff,0x28,0xff,	/* | ..(.....(.....(.| */
-	/* 61ac0 */ 0xff,0xff,0xff,0xff,0x28,0xff,0xff,0xff,0xff,0xff,0x28,0xff,0xff,0xff,0xff,0xff,	/* | ....(.....(.....| */
-	/* 61ad0 */ 0x28,0xff,0xff,0xff,0xff,0xff,0x28,0xff,0xff,0xff,0xff,0xff,0x28,0xff,0xff,0xff,	/* | (.....(.....(...| */
-	/* 61ae0 */ 0xff,0xff,0x28,0xff,0xff,0xff,0xff,0xff,0x28,0xff,0xff,0xff,0xff,0xff,0x28,0xff,	/* | ..(.....(.....(.| */
-	/* 61af0 */ 0xff,0xff,0xff,0xff,0x28,0xff,0xff,0xff,0xff,0xff,0x28,0xff,0xff,0xff,0xff,0xff,	/* | ....(.....(.....| */
-	/* 61b00 */ 0x00,0xff										/* | ................| */
 };
 
 #define ZERO_BUFFER()	memset(block,0,512)
@@ -367,7 +328,7 @@ static int fdisk ( Uint32 device_size )
 	block[0x1cc] = (usr_part_sects >> 16) & 0xff;
 	block[0x1cd] = (usr_part_sects >> 24) & 0xff;
 	// The 'system' area/partition
-	block[0x1d2] = 0x41;				// partition type, Mega-65 system partition
+	block[0x1d2] = 0x41;				// partition type, MEGA65 system partition
 	block[0x1d6] = (sys_part_start      ) & 0xff;	// LBA start of our sys-area
 	block[0x1d7] = (sys_part_start >>  8) & 0xff;
 	block[0x1d8] = (sys_part_start >> 16) & 0xff;
@@ -405,12 +366,13 @@ static int fdisk ( Uint32 device_size )
   Notes:
 	Currently policy: if file already existed on the image, we will reuse the FAT chain, _IF_ it's not fragmented and would fit.
 	If the FAT chain is not long enough (ie, the size of the new file wouldn't fit in terms of number of clusters) we rather
-	create a NEW fat chain, and free old one. This is because it's easier to do so, and some Mega65 features (disk images) needs
+	create a NEW fat chain, and free old one. This is because it's easier to do so, and some MEGA65 features (disk images) needs
 	strictly UNFRAGMENTED state anyway.
 */
 static int update_sdcard_file ( const char *on_card_name, int options, const char *fn_or_data, int size_to_install )
 {
 	int fd = -1;
+	DEBUGPRINT("SDCONTENT: about to updating file %s ..." NL, on_card_name);
 	if (size_to_install <= 0) {
 		fd = open(fn_or_data, O_RDONLY | O_BINARY);
 		if (fd < 0) {
@@ -462,7 +424,7 @@ static int update_sdcard_file ( const char *on_card_name, int options, const cha
 error_on_maybe_sys_file:
 	if ((options & SDCONTENT_SYS_FILE))
 		ERROR_WINDOW(
-			"This file is a must for Xemu/Mega65, however it's under\n"
+			"This file is a must for Xemu/MEGA65, however it's under\n"
 			"copyright by their respective owners.\n"
 			"It's totally the user's responsibility to get/use/own/handle this file!\n%s",
 			fn_or_data
@@ -574,6 +536,53 @@ static int system_files_directory_check ( const char *dir_name, int policy )
 #endif
 
 
+static const char xemu_sdcard_info_block_id[] = "XemuInfoBlock_PleaseDoNotDeleteOrModifyThanks";
+
+
+int sdcontent_check_xemu_signature ( void )
+{
+	Uint8 buffer[512];
+	int ret;
+	if (sdcard_read_block(XEMU_INFO_SDCARD_BLOCK_NO, buffer)) {
+		ret = -1;
+		goto end;
+	}
+	const int r = strlen(xemu_sdcard_info_block_id) + 1;
+	if (memcmp(xemu_sdcard_info_block_id, buffer, r)) {
+		ret = 0;
+		goto end;
+	}
+	ret = (int)(Uint32)(buffer[r] + (buffer[r + 1] << 8) + (buffer[r + 2] << 16) + (buffer[r + 3] << 24));
+end:
+	DEBUGPRINT("SDCARD: check Xemu signature (@block %d): disk=%d this_xemu=%d" NL, XEMU_INFO_SDCARD_BLOCK_NO, ret, MEMCONTENT_VERSION_ID);
+	return ret;
+}
+
+
+static int sdcontent_put_xemu_signature ( void )
+{
+	Uint8 buffer[512];
+	memset(buffer, 0, sizeof buffer);
+	strcpy((char*)buffer, xemu_sdcard_info_block_id);
+	const int r = strlen(xemu_sdcard_info_block_id) + 1;
+	buffer[r + 0] = ((MEMCONTENT_VERSION_ID)      ) & 0xFF;
+	buffer[r + 1] = ((MEMCONTENT_VERSION_ID) >>  8) & 0xFF;
+	buffer[r + 2] = ((MEMCONTENT_VERSION_ID) >> 16) & 0xFF;
+	buffer[r + 3] = ((MEMCONTENT_VERSION_ID) >> 24) & 0xFF;
+	return sdcard_write_block(XEMU_INFO_SDCARD_BLOCK_NO, buffer);
+}
+
+
+int sdcontent_write_rom_stub ( void )
+{
+	Uint8 *rom = xemu_malloc(MEGA65_ROM_SIZE);
+	rom_make_xemu_stub_rom(rom, XEMU_STUB_ROM_SAVE_FILENAME);
+	const int r = update_sdcard_file(MEGA65_ROM_NAME, SDCONTENT_SYS_FILE, (const char*)rom, MEGA65_ROM_SIZE);
+	free(rom);
+	return r;
+}
+
+
 // This function must be called after initializing SDcard, so it's safe for use to call sdcard_read_block() and sdcard_write_block()
 int sdcontent_handle ( Uint32 size_in_blocks, const char *update_dir_path, int options )
 {
@@ -599,7 +608,7 @@ int sdcontent_handle ( Uint32 size_in_blocks, const char *update_dir_path, int o
 		// would be unusable anyway that we can judge it as being subject of fdisk/format.
 		if (has_block_nonzero_byte(block)) {
 			// Though data partition is the first one created by THIS .c source, older existing
-			// images formatted with Mega65's util itself has it as the second. Thus we just
+			// images formatted with MEGA65's util itself has it as the second. Thus we just
 			// hear mfat_init_mbr()'s response, which gives us back the first VALID FAT32 partition,
 			// or -1 if fails to find any.
 			int part = mfat_init_mbr();
@@ -645,19 +654,22 @@ int sdcontent_handle ( Uint32 size_in_blocks, const char *update_dir_path, int o
 		//update_from_directory(system_files_directory, options);
 		char rom_path[PATH_MAX];
 		snprintf(rom_path, sizeof rom_path, "%s%s", sdl_pref_dir, MEGA65_ROM_NAME);
-		update_sdcard_file(MEGA65_ROM_NAME,	options | SDCONTENT_SYS_FILE,	rom_path,				-MEGA65_ROM_SIZE);
+		int r = 0;
+		r |= update_sdcard_file(MEGA65_ROM_NAME,	options | SDCONTENT_SYS_FILE,	rom_path,				-MEGA65_ROM_SIZE);
 		snprintf(rom_path, sizeof rom_path, "%s%s", sdl_pref_dir, CHAR_ROM_NAME);
-		update_sdcard_file(CHAR_ROM_NAME,	options | SDCONTENT_SYS_FILE,	rom_path,				-CHAR_ROM_SIZE);
-		update_sdcard_file("BANNER.M65",	options,			(const char*)meminitdata_banner,	MEMINITDATA_BANNER_SIZE);
-		update_sdcard_file("FREEZER.M65",	options,			(const char*)meminitdata_freezer,	MEMINITDATA_FREEZER_SIZE);
-		char *d81 = xemu_malloc(D81_SIZE);
-		memset(d81, 0, D81_SIZE);
-		memcpy(d81 + 0x61800, d81_at_61800, sizeof d81_at_61800);
-		memcpy(d81 + 0x61900, d81_at_61900, sizeof d81_at_61900);
-		update_sdcard_file(default_disk_image,	options,			d81,					D81_SIZE);
+		r |= update_sdcard_file(CHAR_ROM_NAME,		options | SDCONTENT_SYS_FILE,	rom_path,				-CHAR_ROM_SIZE);
+		r |= update_sdcard_file("BANNER.M65",		options,			(const char*)meminitdata_banner,	MEMINITDATA_BANNER_SIZE);
+		r |= update_sdcard_file("FREEZER.M65",		options,			(const char*)meminitdata_freezer,	MEMINITDATA_FREEZER_SIZE);
+		char *d81 = (char*)d81access_create_image(NULL, "D81 ON <SDCARD>!", 0);
+		xemu_save_file("@template.d81", d81, D81_SIZE, NULL);
+		r |= update_sdcard_file(default_disk_image,	options,			d81,					D81_SIZE);
 		strcpy(d81, xemu_external_d81_signature);
-		update_sdcard_file(xemu_disk_image,	options,			d81,					D81_SIZE);
+		r |= update_sdcard_file(xemu_disk_image,	options,			d81,					D81_SIZE);
 		free(d81);
+		if (r)
+			ERROR_WINDOW("Some error occured while updating your SD-card image file!");
+		else
+			sdcontent_put_xemu_signature();
 	}
 	/* ---- ROUND#3: update user specified files (if any) ---- */
 	if (update_dir_path) {
