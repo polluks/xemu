@@ -1,7 +1,7 @@
 /* A work-in-progess MEGA65 (Commodore 65 clone origins) emulator
    Part of the Xemu project, please visit: https://github.com/lgblgblgb/xemu
    I/O decoding part (used by memory_mapper.h and DMA mainly)
-   Copyright (C)2016-2022 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
+   Copyright (C)2016-2023 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -41,6 +41,7 @@ struct Cia6526 cia1, cia2;		// CIA emulation structures for the two CIAs
 int    cpu_mega65_opcodes = 0;	// used by the CPU emu as well!
 static int bigmult_valid_result = 0;
 int    port_d607 = 0xFF;			// ugly hack to be able to read extra char row of C65 keyboard
+int    core_age_in_days;
 
 
 static const Uint8 fpga_firmware_version[] = { 'X','e','m','u' };
@@ -143,6 +144,8 @@ Uint8 io_read ( unsigned int addr )
 			switch (addr & 0x5F) {
 				case 0x19: return get_mouse_x_via_sid();
 				case 0x1A: return get_mouse_y_via_sid();
+				case 0x1B: return rand();	// oscillator-3 status read/only, generate some random byte here, even if it's not correct
+				case 0x1C: return rand();	// -- "" --
 			}
 			return 0xFF;
 		case 0x16:	// $D600-$D6FF ~ C65 I/O mode
@@ -173,19 +176,36 @@ Uint8 io_read ( unsigned int addr )
 				case 0xF1:
 					return (fpga_switches >> 8) & 0xFF;
 				case 0x10:				// last keypress ASCII value
-					return hwa_kbd_get_last();
+					return hwa_kbd_get_last_ascii();
 				case 0x11:				// modifier keys on kbd being used
 					return hwa_kbd_get_modifiers();
 				case 0x13:				// $D613: direct access to the kbd matrix, read selected row (set by writing $D614), bit 0 = key pressed
 					return kbd_directscan_query(D6XX_registers[0x14]);	// for further explanations please see this function in input_devices.c
-				case 0x29:
-					return configdb.mega65_model;		// MEGA65 model
 				case 0x0F:
-					// D60F bit 5, real hardware (1), emulation (0), other bits are not emulated yet by Xemu, so I give simply zero
-					return 0;
+					// GS $D60F
+					// bit 0: cursor left key is pressed
+					// bit 1: cursor up key is pressed
+					// bit 5: 1=real hardware, 0=emulation
+					return kbd_query_leftup_status();	// do bit 0/1 forming in input_devices.c, other bits should be zero, so it's ok to call only this
 				case 0x1B:
 					// D61B amiga / 1531 mouse auto-detect. FIXME XXX what value we should return at this point? :-O
 					return 0xFF;
+				case 0x19:
+					return hwa_kbd_get_last_petscii();
+				case 0x20: // GS $D620 UARTMISC:POTAX Read Port A paddle X, without having to fiddle with SID/CIA settings.
+				case 0x22: // GS $D622 UARTMISC:POTBX Read Port B paddle X, without having to fiddle with SID/CIA settings.
+					return get_mouse_x_via_sid();
+				case 0x21: // GS $D621 UARTMISC:POTAY Read Port A paddle Y, without having to fiddle with SID/CIA settings.
+				case 0x23: // GS $D623 UARTMISC:POTBY Read Port B paddle Y, without having to fiddle with SID/CIA settings.
+					return get_mouse_y_via_sid();
+				case 0x29: // GS $D629: UARTMISC:M65MODEL MEGA65 model ID.
+					return configdb.mega65_model;
+				case 0x2A: // GS $D62A KBD:FWDATEL LSB of keyboard firmware date stamp (days since 1 Jan 2020)
+				case 0x30: // GS $D630 FPGA:FWDATEL LSB of MEGA65 FPGA design date stamp (days since 1 Jan 2020)
+					return core_age_in_days & 0xFF;
+				case 0x2B: // GS $D62B KBD:FWDATEH MSB of keyboard firmware date stamp (days since 1 Jan 2020)
+				case 0x31: // GS $D631 FPGA:FWDATEH MSB of MEGA65 FPGA design date stamp (days since 1 Jan 2020)
+					return core_age_in_days >> 8;
 				case 0x32: // D632-D635: FPGA firmware ID
 				case 0x33:
 				case 0x34:
@@ -196,6 +216,10 @@ Uint8 io_read ( unsigned int addr )
 				case 0x2E:
 				case 0x2F:
 					return cpld_firmware_version[addr - 0x2C];
+				case 0xDE: // D6DE: FPGA die temperatore, low byte: assuming to be 0, but the low nybble contains a kind of "noise" only
+					return rand() & 0xF;
+				case 0xDF: // D6DF: FPGA die temperature, high byte: assuming to be 164 (just because I see that on a real MEGA65 currently at my room's temperature ...)
+					return 164;
 				default:
 					DEBUG("MEGA65: reading MEGA65 specific I/O @ $D6%02X result is $%02X" NL, addr, D6XX_registers[addr]);
 					return D6XX_registers[addr];
@@ -210,6 +234,8 @@ Uint8 io_read ( unsigned int addr )
 				return dma_read_reg(addr & 0xF);
 			if (addr == 0x0F)
 				return 0;	// FIXME: D70F bit 7 = 32/32 bits divisor busy flag, bit 6 = 32*32 mult busy flag. We're never busy, so the zero. But the OTHER bits??? Any purpose of those??
+			if (addr == 0xEF)	// $D7EF CPU:RAND Hardware random number generator
+				return rand() & 0xFF;
 			// ;) FIXME this is LAZY not to decode if we need to update bigmult at all ;-P
 			if (XEMU_UNLIKELY(!bigmult_valid_result))
 				update_hw_multiplier();
@@ -386,7 +412,10 @@ void io_write ( unsigned int addr, Uint8 data )
 			}
 			switch (addr) {
 				case 0x10:	// ASCII kbd last press value to zero whatever the written data would be
-					hwa_kbd_move_next();
+					hwa_kbd_move_next_ascii();
+					return;
+				case 0x19:
+					hwa_kbd_move_next_petscii();
 					return;
 				case 0x11:
 					hwa_kbd_disable_selector(data & 0x80);
@@ -421,8 +450,15 @@ void io_write ( unsigned int addr, Uint8 data )
 				case 0x7F:	// hypervisor leave
 					hypervisor_leave();	// 0x67F is also handled on enter's state, so it will be executed only in_hypervisor mode, which is what I want
 					return;
-				case 0xCF:
+				case 0xCF:	// $D6CF - FPGA reconfiguration reg (if $42 is written). In testing mode, Xemu invents some new values here, though!
 					if (data == 0x42) {
+						if (configdb.testing) {	// in testing mode, writing $42 would mean to exit emulation!
+							if (configdb.screenshot_and_exit)
+								vic4_registered_screenshot_request = 1;	// this will cause also to exit (as configdb.screenshot_and_exit is not NULL)
+							else
+								XEMUEXIT(0);
+							return;
+						}
 						if (ARE_YOU_SURE("FPGA reconfiguration request. System must be reset.\nIs it OK to do now?\nAnswering NO may crash your program requesting this task though,\nor can result in endless loop of trying.", ARE_YOU_SURE_DEFAULT_YES)) {
 							reset_mega65();
 						}
@@ -454,19 +490,19 @@ void io_write ( unsigned int addr, Uint8 data )
 		case 0x09:	// $D900-$D9FF ~ C64 I/O mode
 		case 0x0A:	// $DA00-$DAFF ~ C64 I/O mode
 		case 0x0B:	// $DB00-$DBFF ~ C64 I/O mode
-			colour_ram[addr - 0x0800] = data & 0xF;		// FIXME: is this true, that high nibble is masked, so switching to C65/M65 mode high nibble will be zero??
+			write_colour_ram(addr - 0x0800, data & 0xF);	// FIXME: is this true, that high nibble is masked, so switching to C65/M65 mode high nibble will be zero??
 			return;
 		case 0x18:	// $D800-$D8FF ~ C65 I/O mode
 		case 0x19:	// $D900-$D9FF ~ C65 I/O mode
 		case 0x1A:	// $DA00-$DAFF ~ C65 I/O mode
 		case 0x1B:	// $DB00-$DBFF ~ C65 I/O mode
-			colour_ram[addr - 0x1800] = data;
+			write_colour_ram(addr - 0x1800, data);
 			return;
 		case 0x38:	// $D800-$D8FF ~ M65 I/O mode
 		case 0x39:	// $D900-$D9FF ~ M65 I/O mode
 		case 0x3A:	// $DA00-$DAFF ~ M65 I/O mode
 		case 0x3B:	// $DB00-$DBFF ~ M65 I/O mode
-			colour_ram[addr - 0x3800] = data;
+			write_colour_ram(addr - 0x3800, data);
 			return;
 		/* --------------------------------------- */
 		/* $DC00-$DCFF: CIA#1, EXTENDED COLOUR RAM */
@@ -475,7 +511,7 @@ void io_write ( unsigned int addr, Uint8 data )
 		case 0x1C:	// $DC00-$DCFF ~ C65 I/O mode
 		case 0x3C:	// $DC00-$DCFF ~ M65 I/O mode
 			if (vic_registers[0x30] & 1)
-				colour_ram[0x400 + (addr & 0xFF)] = data;
+				write_colour_ram(0x400 + (addr & 0xFF), data);
 			else
 				cia_write(&cia1, addr & 0xF, data);
 			return;
@@ -486,7 +522,7 @@ void io_write ( unsigned int addr, Uint8 data )
 		case 0x1D:	// $DD00-$DDFF ~ C65 I/O mode
 		case 0x3D:	// $DD00-$DDFF ~ M65 I/O mode
 			if (vic_registers[0x30] & 1)
-				colour_ram[0x500 + (addr & 0xFF)] = data;
+				write_colour_ram(0x500 + (addr & 0xFF), data);
 			else
 				cia_write(&cia2, addr & 0xF, data);
 			return;
@@ -502,7 +538,7 @@ void io_write ( unsigned int addr, Uint8 data )
 			// FIXME: is it really true for *ALL* I/O modes, that colour RAM expansion to 2K and
 			// disk buffer I/O mapping works in all of them??
 			if (vic_registers[0x30] & 1) {
-				colour_ram[0x600 + (addr & 0x1FF)] = data;
+				write_colour_ram(0x600 + (addr & 0x1FF), data);
 				return;
 			}
 			if (XEMU_LIKELY(sd_status & SD_ST_MAPPED)) {
@@ -523,9 +559,9 @@ void io_write ( unsigned int addr, Uint8 data )
 
 
 Uint8 io_dma_reader ( int addr ) {
-	return io_read(addr | (vic_iomode << 12));
+	return io_read((addr & 0xFFF) + (vic_iomode << 12));
 }
 
 void  io_dma_writer ( int addr, Uint8 data ) {
-	io_write(addr | (vic_iomode << 12), data);
+	io_write((addr & 0xFFF) + (vic_iomode << 12), data);
 }

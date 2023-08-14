@@ -1,6 +1,6 @@
 /* A work-in-progess MEGA65 (Commodore 65 clone origins) emulator
    Part of the Xemu project, please visit: https://github.com/lgblgblgb/xemu
-   Copyright (C)2016-2022 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
+   Copyright (C)2016-2023 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
    Copyright (C)2020-2022 Hernán Di Pietro <hernan.di.pietro@gmail.com>
 
 This program is free software; you can redistribute it and/or modify
@@ -241,8 +241,9 @@ extern int   videostd_changed;
 extern Uint8 videostd_id;
 extern float videostd_1mhz_cycles_per_scanline;
 extern int   vic_readjust_sdl_viewport;
-extern int   vic4_disallow_video_std_change;
+extern int   vic4_disallow_videostd_change;
 
+extern int   vic4_registered_screenshot_request;
 extern int   vic_vidp_legacy, vic_chrp_legacy, vic_sprp_legacy;
 
 extern const char *iomode_names[4];
@@ -253,7 +254,15 @@ extern void  vic_write_reg ( unsigned int addr, Uint8 data );
 extern Uint8 vic_read_reg  ( unsigned int addr );
 extern int   vic4_render_scanline ( void );
 extern void  vic4_open_frame_access ( void );
-extern void  vic4_close_frame_access (void );
+extern void  vic4_close_frame_access ( void );
+extern void  vic4_set_videostd ( const int mode, const char *comment );
+
+extern Uint8*vic4_query_screen_address ( void );
+extern Uint8*vic4_query_colour_address ( void );
+extern int   vic4_query_screen_width ( void );
+extern int   vic4_query_screen_height ( void );
+extern char *vic4_textshot ( void );
+extern int   vic4_textinsert ( const char *text );
 
 #ifdef XEMU_SNAPSHOT_SUPPORT
 #include "xemu/emutools_snapshot.h"

@@ -1,6 +1,6 @@
 /* A work-in-progess MEGA65 (Commodore 65 clone origins) emulator
    Part of the Xemu project, please visit: https://github.com/lgblgblgb/xemu
-   Copyright (C)2017-2022 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
+   Copyright (C)2017-2023 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -64,6 +64,7 @@ Uint8 main_ram[512 << 10];
 // the chip-RAM. Also, the first 1 or 2K can be seen in the C64-style I/O area too, at $D800
 Uint8 colour_ram[0x8000];
 // Write-Only memory (WOM) for character fetch when it would be the ROM (on C64 eg)
+// FUN FACT: WOM is not write-only any more :) But for "historical purposes" I containue to name it as "WOM" anyway ;)
 Uint8 char_wom[0x2000];
 // 16K of hypervisor RAM, can be only seen in hypervisor mode.
 Uint8 hypervisor_ram[0x4000];
@@ -187,9 +188,7 @@ DEFINE_READER(colour_ram_reader) {
 	return colour_ram[GET_READER_OFFSET()];
 }
 DEFINE_WRITER(colour_ram_writer) {
-	colour_ram[GET_WRITER_OFFSET()] = data;
-	// we also need the update the "real" RAM
-	//main_ram[GET_WRITER_OFFSET() & 2047] = data;
+	write_colour_ram(GET_WRITER_OFFSET(), data);
 }
 DEFINE_READER(dummy_reader) {
 	return 0xFF;
@@ -203,7 +202,10 @@ DEFINE_WRITER(hypervisor_ram_writer) {
 	if (XEMU_LIKELY(in_hypervisor))
 		hypervisor_ram[GET_WRITER_OFFSET()] = data;
 }
-DEFINE_WRITER(char_wom_writer) {	// Note: there is NO read for this, as it's write-only memory!
+DEFINE_READER(char_wom_reader) {
+	return char_wom[GET_READER_OFFSET()];
+}
+DEFINE_WRITER(char_wom_writer) {
 	char_wom[GET_WRITER_OFFSET()] = data;
 }
 DEFINE_READER(slow_ram_reader) {
@@ -331,6 +333,14 @@ DEFINE_WRITER(i2c_io_writer) {
 			break;
 	}
 }
+// Not implemented yet, just here, since freezer accesses this memory area, and without **some** dummy
+// support, it would cause "unhandled memory access" warning in Xemu.
+DEFINE_READER(mem1541_reader) {
+	return 0xFF;
+}
+DEFINE_WRITER(mem1541_writer) {
+}
+
 
 // Memory layout table for MEGA65
 // Please note, that for optimization considerations, it should be organized in a way
@@ -351,7 +361,7 @@ static const struct m65_memory_map_st m65_memory_map[] = {
 	// full colour RAM
 	{ 0xFF80000, 0xFF87FFF, colour_ram_reader, colour_ram_writer },		// full colour RAM (32K)
 	{ 0xFFF8000, 0xFFFBFFF, hypervisor_ram_reader, hypervisor_ram_writer },	// 16KB HYPPO hickup/hypervisor ROM
-	{ 0xFF7E000, 0xFF7FFFF, dummy_reader, char_wom_writer },		// Character "WriteOnlyMemory"
+	{ 0xFF7E000, 0xFF7FFFF, char_wom_reader, char_wom_writer },		// Character "WriteOnlyMemory" (which is not write-only any more, but it was initially, so the name ...)
 	{ 0xFFDE800, 0xFFDEFFF, eth_buffer_reader, eth_buffer_writer },		// ethernet RX/TX buffer, NOTE: the same address, reading is always the RX_read, writing is always TX_write
 	{ 0xFFD6000, 0xFFD6FFF, disk_buffers_reader, disk_buffers_writer },	// disk buffer for SD (can be mapped to I/O space too), F011, and some "3.5K scratch space" [??]
 	{ 0xFFD7000, 0xFFD7FFF, i2c_io_reader, i2c_io_writer },			// I2C devices
@@ -360,6 +370,7 @@ static const struct m65_memory_map_st m65_memory_map[] = {
 	{ 0x4000000, 0x7FFFFFF, dummy_reader, dummy_writer },		// slow RAM memory area, not exactly known what it's for, let's define as "dummy"
 	{ 0xFE00000, 0xFE000FF, opl3_reader, opl3_writer },
 	{ 0x60000, 0xFFFFF, dummy_reader, dummy_writer },			// upper "unused" area of C65 (!) memory map. It seems C65 ROMs want it (Expansion RAM?) so we define as unused.
+	{ 0xFFDB000, 0xFFDFFFF, mem1541_reader, mem1541_writer },		// 1541's 16K ROM + 4K RAM, not so much used currently, but freezer seems to access it, for example ...
 	// the last entry *MUST* include the all possible addressing space to "catch" undecoded memory area accesses!!
 	{ 0, 0xFFFFFFF, invalid_mem_reader, invalid_mem_writer },
 	// even after the last entry :-) to filter out programming bugs, catch all possible even not valid M65 physical address space acceses ...
@@ -961,6 +972,12 @@ void  memory_debug_write_phys_addr ( int addr, Uint8 data )
 {
 	phys_addr_decoder(addr, MEM_SLOT_DEBUG_RESOLVER, MEM_SLOT_DEBUG_RESOLVER);
 	CALL_MEMORY_WRITER(MEM_SLOT_DEBUG_RESOLVER, addr, data);
+}
+
+int   memory_cpurd2linear_xlat ( Uint16 cpu_addr)
+{
+	int slot = cpu_addr >> 8;
+	return mem_page_rd_o[slot] + mem_page_refp[slot]->start + (int)(cpu_addr & 0xFF);
 }
 
 /* the same as above but for CPU addresses */

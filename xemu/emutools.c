@@ -1,6 +1,6 @@
 /* Xemu - emulation (running on Linux/Unix/Windows/OSX, utilizing SDL2) of some
    8 bit machines, including the Commodore LCD and Commodore 65 and MEGA65 as well.
-   Copyright (C)2016-2022 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
+   Copyright (C)2016-2023 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -40,10 +40,7 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
 #	warning "System deifned __BIGGEST_ALIGNMENT__ just too big Xemu will use a smaller default."
 #endif
 #ifdef XEMU_CPU_ARM
-#	warning "Compiling for ARM CPU. Some features of Xemu won't be avaialble because of usual limits of OSes (MacOS, Linux) on the ARM architecture."
-#	ifdef XEMU_ARCH_OSX
-#		warning "WOW! Are you on Apple M1?! Call me now!"
-#	endif
+#	warning "Compiling for ARM (including Apple Silicon as well) CPU. Some features of Xemu won't be available because of some limitations of usual OSes on this ISA."
 #endif
 
 #ifdef XEMU_ARCH_WIN
@@ -74,9 +71,13 @@ static int atexit_callback_for_console_registered = 0;
 int i_am_sure_override = 0;
 const char *str_are_you_sure_to_exit = "Are you sure to exit Xemu?";
 
+char **xemu_initial_argv = NULL;
+int    xemu_initial_argc = -1;
+Uint64 buildinfo_cdate_uts = 0;
+const char *xemu_initial_cwd = NULL;
 SDL_Window   *sdl_win = NULL;
-SDL_Renderer *sdl_ren = NULL;
-SDL_Texture  *sdl_tex = NULL;
+static SDL_Renderer *sdl_ren = NULL;
+static SDL_Texture  *sdl_tex = NULL;
 SDL_PixelFormat *sdl_pix_fmt;
 int sdl_on_x11 = 0, sdl_on_wayland = 0;
 static Uint32 sdl_pixel_format_id;
@@ -93,6 +94,8 @@ Uint32 *sdl_pixel_buffer = NULL;
 Uint32 *xemu_frame_pixel_access_p = NULL;
 int texture_x_size_in_bytes;
 int emu_is_fullscreen = 0;
+int emu_is_headless = 0;
+int emu_is_sleepless = 0;
 static int win_xsize, win_ysize;
 char *sdl_pref_dir = NULL, *sdl_base_dir = NULL, *sdl_inst_dir = NULL;
 Uint32 sdl_winid;
@@ -123,7 +126,23 @@ static int follow_win_size;
 #error "At least SDL version 2.0.4 is needed!"
 #endif
 
-#ifdef XEMU_OSD_SUPPORT
+#ifdef	XEMU_VGA_FONT_8X8
+#define	CHARACTER_SET_DEFINER_8X8	const Uint8 vga_font_8x8[256 *  8]
+#endif
+#ifdef	XEMU_VGA_FONT_8X14
+#define	CHARACTER_SET_DEFINER_8X14	const Uint8 vga_font_8x14[256 * 14]
+#endif
+#ifdef	XEMU_VGA_FONT_8X16
+#define	CHARACTER_SET_DEFINER_8X16	const Uint8 vga_font_8x16[256 * 16]
+#endif
+#define ALLOW_INCLUDE_VGAFONTS
+#include "xemu/vgafonts.c"
+#undef ALLOW_INCLUDE_VGAFONTS
+#undef	CHARACTER_SET_DEFINER_8X8
+#undef	CHARACTER_SET_DEFINER_8X14
+#undef	CHARACTER_SET_DEFINER_8X16
+
+#ifdef	XEMU_OSD_SUPPORT
 #include "xemu/gui/osd.c"
 #endif
 
@@ -354,6 +373,8 @@ void xemu_set_screen_mode ( int setting )
 
 static inline void do_sleep ( int td )
 {
+	if (XEMU_UNLIKELY(emu_is_sleepless))
+		return;
 #ifdef XEMU_ARCH_HTML
 #define __SLEEP_METHOD_DESC "emscripten_set_main_loop_timing"
 	// Note: even if td is zero (or negative ...) give at least a little time for the browser
@@ -562,7 +583,6 @@ static void shutdown_emulator ( void )
 		sdl_win = NULL;
 	}
 	atexit_callback_for_console();
-	//SDL_Quit();
 	if (td_stat_counter) {
 		char td_stat_str[XEMU_CPU_STAT_INFO_BUFFER_SIZE];
 		xemu_get_timing_stat_string(td_stat_str, sizeof td_stat_str);
@@ -575,6 +595,9 @@ static void shutdown_emulator ( void )
 	// It seems, calling SQL_Quit() at least on Windows causes "segfault".
 	// Not sure why, but to be safe, I just skip calling it :(
 	//SDL_Quit();
+#ifndef XEMU_ARCH_WIN
+	SDL_Quit();
+#endif
 }
 
 
@@ -648,8 +671,75 @@ int xemu_is_first_time_user ( void )
 }
 
 
-void xemu_pre_init ( const char *app_organization, const char *app_name, const char *slogan )
+// It seems SDL_GetBasePath() can be defunct on some architectures.
+// This function is intended to be used only by xemu_pre_init() and contains workaround.
+static char *_getbasepath ( void )
 {
+	char *p = SDL_GetBasePath();
+	if (p) {
+		char *ret = xemu_strdup(p);
+		SDL_free(p);
+		return ret;
+	}
+#ifdef XEMU_ARCH_UNIX
+	// We assume that SDL_GetBasePath only may have problem on certain UNIXes like for example on OpenBSD
+	DEBUGPRINT("SDL: WARNING: could not query SDL base directory: %s. Reverting back to Xemu's implementation." NL, SDL_GetError());
+	// reverting back to our own method ...
+	char exepath[PATH_MAX + 1];
+	snprintf(exepath, sizeof exepath, "%s%s", xemu_initial_argv[0][0] == DIRSEP_CHR ? "" : xemu_initial_cwd, xemu_initial_argv[0]);
+	p = strrchr(exepath, DIRSEP_CHR);
+	if (p)
+		p[1] = '\0';
+	else
+		return NULL;
+	return xemu_strdup(exepath);
+#endif
+	return NULL;
+}
+
+
+static inline Uint64 _get_uts_from_cdate ( void )
+{
+	if (strlen(XEMU_BUILDINFO_CDATE) != 14)
+		FATAL("Wrong XEMU_BUILDINFO_CDATE length (%d)!", (int)strlen(XEMU_BUILDINFO_CDATE));
+	struct tm t = {
+		.tm_year  = (XEMU_BUILDINFO_CDATE[ 0] - '0') * 1000 + (XEMU_BUILDINFO_CDATE[ 1] - '0') * 100 + (XEMU_BUILDINFO_CDATE[2] - '0') * 10 + (XEMU_BUILDINFO_CDATE[3] - '0') - 1900,
+		.tm_mon   = (XEMU_BUILDINFO_CDATE[ 4] - '0') *   10 + (XEMU_BUILDINFO_CDATE[ 5] - '0') - 1,
+		.tm_mday  = (XEMU_BUILDINFO_CDATE[ 6] - '0') *   10 + (XEMU_BUILDINFO_CDATE[ 7] - '0'),
+		.tm_hour  = (XEMU_BUILDINFO_CDATE[ 8] - '0') *   10 + (XEMU_BUILDINFO_CDATE[ 9] - '0'),
+		.tm_min   = (XEMU_BUILDINFO_CDATE[10] - '0') *   10 + (XEMU_BUILDINFO_CDATE[11] - '0'),
+		.tm_sec   = (XEMU_BUILDINFO_CDATE[12] - '0') *   10 + (XEMU_BUILDINFO_CDATE[13] - '0'),
+		.tm_isdst = -1
+	};
+	return (Uint64)mktime(&t);
+}
+
+
+void xemu_pre_init ( const char *app_organization, const char *app_name, const char *slogan, const int argc, char **argv )
+{
+	if (!buildinfo_cdate_uts)
+		buildinfo_cdate_uts = _get_uts_from_cdate();
+	if (xemu_initial_argc < 0)
+		xemu_initial_argc = argc;
+	if (xemu_initial_argc < 1)
+		FATAL("%s(): Cannot extract argc [%d?]", __func__, xemu_initial_argc);
+	if (!xemu_initial_argv)
+		xemu_initial_argv = argv;
+	if (!xemu_initial_argv)
+		FATAL("%s(): Cannot extract argv [NULL?]", __func__);
+	for (int i = 0; i < xemu_initial_argc; i++)
+		if (!xemu_initial_argv[i])
+			FATAL("%s(): Cannot extract argv[%d] [NULL?]", __func__, i);
+	if (!xemu_initial_cwd) {
+		char buffer[PATH_MAX + 2];
+		if (getcwd(buffer, sizeof buffer)) {
+			if (buffer[strlen(buffer) - 1] != DIRSEP_CHR)
+				strcat(buffer, DIRSEP_STR);
+			xemu_initial_cwd = xemu_strdup(buffer);
+		}
+	}
+	if (!xemu_initial_cwd)
+		FATAL("%s(): getcwd() resolution does not work", __func__);
 #ifdef XEMU_ARCH_UNIX
 #ifndef XEMU_DO_NOT_DISALLOW_ROOT
 	// Some check to disallow dangerous things (running Xemu as user/group root)
@@ -657,6 +747,8 @@ void xemu_pre_init ( const char *app_organization, const char *app_name, const c
 		FATAL("Xemu must not be run as user root");
 	if (getgid() == 0 || getegid() == 0)
 		FATAL("Xemu must not be run as group root");
+#elif !defined(XEMU_ARCH_SINGLEUSER)
+#	warning "Running as root check is deactivated."
 #endif
 	// ignore SIGHUP, eg closing the terminal Xemu was started from ...
 	signal(SIGHUP, SIG_IGN);	// ignore SIGHUP, eg closing the terminal Xemu was started from ...
@@ -713,11 +805,8 @@ void xemu_pre_init ( const char *app_organization, const char *app_name, const c
 	if (SDL_Init(0))
 		FATAL("Cannot pre-initialize SDL without any subsystem: %s", SDL_GetError());
 	atexit(shutdown_emulator);
-	p = SDL_GetBasePath();
-	if (p) {
-		sdl_base_dir = xemu_strdup(p);
-		SDL_free(p);
-	} else
+	sdl_base_dir = _getbasepath();
+	if (!sdl_base_dir)
 		FATAL("Cannot query SDL base directory: %s", SDL_GetError());
 	p = GetHackedPrefDir(sdl_base_dir, app_name);
 	if (!p)
@@ -920,9 +1009,6 @@ int xemu_post_init (
 	void (*shutdown_callback)(void)		// callback function called on exit (can be nULL to not have any emulator specific stuff)
 ) {
 	srand((unsigned int)time(NULL));
-#	include "build/xemu-48x48.xpm"
-	SDL_RendererInfo ren_info;
-	int a;
 	if (!debug_fp)
 		xemu_init_debug(getenv("XEMU_DEBUG_FILE"));
 	if (!debug_fp && chatty_xemu)
@@ -933,6 +1019,15 @@ int xemu_post_init (
 		ERROR_WINDOW("Byte order test failed!!");
 		return 1;
 	}
+#ifndef	XEMU_ARCH_HTML
+	if (emu_is_headless) {
+		static char *dummies[] = { "SDL_VIDEODRIVER=dummy", "SDL_AUDIODRIVER=dummy", NULL };
+		for (char **p = dummies; *p; p++) {
+			DEBUGPRINT("SDL: headless mode env-var setup: %s" NL, *p);
+			putenv(*p);
+		}
+	}
+#endif
 #ifdef SDL_HINT_VIDEO_X11_NET_WM_BYPASS_COMPOSITOR
 	// Disallow disabling compositing (of KDE, for example)
 	// Maybe needed before SDL_Init(), so it's here before calling xemu_init_sdl()
@@ -991,6 +1086,10 @@ int xemu_post_init (
 #ifdef SDL_HINT_VIDEO_ALLOW_SCREENSAVER
 	SDL_SetHint(SDL_HINT_VIDEO_ALLOW_SCREENSAVER, "1");				// 1 = enable screen saver
 #endif
+#if defined(SDL_HINT_MAC_CTRL_CLICK_EMULATE_RIGHT_CLICK) && defined(XEMU_ARCH_MAC)
+#	warning "Activating workaround for lame newer Apple notebooks (no right click on touchpads)"
+	SDL_SetHint(SDL_HINT_MAC_CTRL_CLICK_EMULATE_RIGHT_CLICK, "1");			// 1 = enable CTRL + click = right click (needed for modern Mac touchpads, it seems)
+#endif
 	/* end of SDL hints section */
 	sdl_window_title = xemu_strdup(window_title);
 	sdl_win = SDL_CreateWindow(
@@ -1010,7 +1109,8 @@ int xemu_post_init (
 	strcpy(window_title_buffer, window_title);
 	window_title_buffer_end = window_title_buffer + strlen(window_title);
 	//SDL_SetWindowMinimumSize(sdl_win, SCREEN_WIDTH, SCREEN_HEIGHT * 2);
-	a = SDL_GetNumRenderDrivers();
+	int a = SDL_GetNumRenderDrivers();
+	SDL_RendererInfo ren_info;
 	while (--a >= 0) {
 		if (!SDL_GetRenderDriverInfo(a, &ren_info)) {
 			DEBUGPRINT("SDL renderer driver #%d: \"%s\"" NL, a, ren_info.name);
@@ -1058,6 +1158,7 @@ int xemu_post_init (
 	xemu_render_dummy_frame(black_colour, texture_x_size, texture_y_size);
 	if (chatty_xemu)
 		printf(NL);
+#	include "build/xemu-48x48.xpm"
 	xemu_set_icon_from_xpm(favicon_xpm);
 	return 0;
 }
@@ -1291,13 +1392,34 @@ int _sdl_emu_secured_modal_box_ ( const char *items_in, const char *msg )
    this function. I can't do anything, since Windows API is a nightmare, using non-C-standard types for system
    calls, I have no idea ... */
 
+#ifdef XEMU_ARCH_WIN
+static int redirect_stdfp ( const DWORD handle_const, FILE *std, const char *mode, const char *desc )
+{
+	const HANDLE lStdHandle = GetStdHandle(handle_const);
+	if (lStdHandle == NULL || lStdHandle == INVALID_HANDLE_VALUE) {
+		DEBUGPRINT("WINDOWS: cannot redirect %s: GetStdHandle() failed" NL, desc);
+		return 1;
+	}
+	const int hConHandle = _open_osfhandle((INT_PTR)lStdHandle, _O_TEXT);
+	if (hConHandle < 0) {
+		DEBUGPRINT("WINDOWS: cannot redirect %s: _open_osfhandle() failed" NL, desc);
+		return 1;
+	}
+	FILE *fp = _fdopen(hConHandle, mode);
+	if (!fp) {
+		DEBUGPRINT("WINDOWS: cannot redirect %s: _fdopen() failed" NL, desc);
+		return 1;
+	}
+	*std = *fp;
+	setvbuf(std, NULL, _IONBF, 0);
+	return 0;
+}
+#endif
+
 void sysconsole_open ( void )
 {
 #ifdef XEMU_ARCH_WIN
-	int hConHandle;
-	HANDLE lStdHandle;
 	CONSOLE_SCREEN_BUFFER_INFO coninfo;
-	FILE *fp;
 	if (sysconsole_is_open)
 		return;
 	sysconsole_is_open = 0;
@@ -1326,28 +1448,14 @@ void sysconsole_open ( void )
 	coninfo.dwSize.Y = 1024;
 	//coninfo.dwSize.X = 100;
 	SetConsoleScreenBufferSize(GetStdHandle(STD_OUTPUT_HANDLE), coninfo.dwSize);
-	// redirect unbuffered STDOUT to the console
-	lStdHandle = GetStdHandle(STD_OUTPUT_HANDLE);
-	hConHandle = _open_osfhandle((INT_PTR)lStdHandle, _O_TEXT);
-	fp = _fdopen( hConHandle, "w" );
-	*stdout = *fp;
-	setvbuf( stdout, NULL, _IONBF, 0 );
-	// redirect unbuffered STDIN to the console
-	lStdHandle = GetStdHandle(STD_INPUT_HANDLE);
-	hConHandle = _open_osfhandle((INT_PTR)lStdHandle, _O_TEXT);
-	fp = _fdopen( hConHandle, "r" );
-	*stdin = *fp;
-	setvbuf( stdin, NULL, _IONBF, 0 );
-	// redirect unbuffered STDERR to the console
-	lStdHandle = GetStdHandle(STD_ERROR_HANDLE);
-	hConHandle = _open_osfhandle((INT_PTR)lStdHandle, _O_TEXT);
-	fp = _fdopen( hConHandle, "w" );
-	*stderr = *fp;
-	setvbuf( stderr, NULL, _IONBF, 0 );
+	// redirect unbuffered stdin/stdout/stderr to the console:
+	redirect_stdfp(STD_OUTPUT_HANDLE, stdout, "w", "STDOUT");
+	redirect_stdfp(STD_INPUT_HANDLE,  stdin,  "r", "STDIN" );
+	redirect_stdfp(STD_ERROR_HANDLE,  stderr, "w", "STDERR");
 	// make cout, wcout, cin, wcin, wcerr, cerr, wclog and clog point to console as well
 	// sync_with_stdio();
 	// Set Con Attributes
-	//SetConsoleTextAttribute(GetStdHandle(STD_ERROR_HANDLE), FOREGROUND_RED | FOREGROUND_INTENSITY);
+	SetConsoleTextAttribute(GetStdHandle(STD_ERROR_HANDLE), FOREGROUND_RED | FOREGROUND_INTENSITY);
 	SetConsoleTextAttribute(GetStdHandle(STD_OUTPUT_HANDLE), FOREGROUND_GREEN | FOREGROUND_INTENSITY);
 	SetConsoleMode(GetStdHandle(STD_OUTPUT_HANDLE), ENABLE_PROCESSED_OUTPUT | ENABLE_WRAP_AT_EOL_OUTPUT);
 	SetConsoleMode(GetStdHandle(STD_INPUT_HANDLE), ENABLE_ECHO_INPUT | ENABLE_LINE_INPUT);
@@ -1718,7 +1826,15 @@ int xemu_os_stat ( const char *fn, struct stat *statbuf )
 	return 0;
 }
 
+
 #endif
+
+
+int xemu_os_file_exists ( const char *fn )
+{
+	struct stat st;
+	return !xemu_os_stat(fn, &st);
+}
 
 
 #ifndef XEMU_ARCH_WIN

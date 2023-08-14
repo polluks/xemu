@@ -1,6 +1,6 @@
 /* A work-in-progess MEGA65 (Commodore-65 clone origins) emulator
    Part of the Xemu project, please visit: https://github.com/lgblgblgb/xemu
-   Copyright (C)2016-2021 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
+   Copyright (C)2016-2023 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -26,6 +26,8 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
 // Also, it's pointless for emscripten, for sure.
 #warning "Platform does not support UMON"
 #else
+
+#include "sdcard.h"
 
 #include "xemu/emutools_socketapi.h"
 
@@ -173,8 +175,7 @@ static void execute_command ( char *cmd )
 		case 'm':
 			cmd = parse_hex_arg(cmd, &par1, 0, 0xFFFFFFF);
 			bank = par1 >> 16;
-			if (cmd && check_end_of_command(cmd, 1))
-			{
+			if (cmd && check_end_of_command(cmd, 1)) {
 				if (bank == 0x777)
 					m65mon_dumpmem16(par1);
 				else
@@ -184,10 +185,8 @@ static void execute_command ( char *cmd )
 		case 'M':
 			cmd = parse_hex_arg(cmd, &par1, 0, 0xFFFFFFF);
 			bank = par1 >> 16;
-			if (cmd && check_end_of_command(cmd, 1))
-			{
-				for (int k = 0; k < 32; k++)
-				{
+			if (cmd && check_end_of_command(cmd, 1)) {
+				for (int k = 0; k < 32; k++) {
 					if (bank == 0x777)
 						m65mon_dumpmem16(par1);
 					else
@@ -226,12 +225,37 @@ static void execute_command ( char *cmd )
 		case 0:
 			m65mon_empty_command();	// emulator can use this, if it wants
 			break;
+		case '~':
+			if (!strncmp(cmd, "exit", 4)) {
+				XEMUEXIT(0);
+			} else if (!strncmp(cmd, "mount", 5)) {
+				// Quite crude syntax for now:
+				// 	~mount0		- unmounting image/disk in drive-0
+				//	~mount1		- --""-- in drive-1
+				//	~mount0disk.d81	- mounting "disk81" to drive-0 (yes, no spaces, etc ....)
+				// So you got it.
+				cmd += 5;
+				if (*cmd && (*cmd == '0' || *cmd == '1')) {
+					const int unit = *cmd - '0';
+					cmd++;
+					if (*cmd) {
+						umon_printf("Mounting %d for: \"%s\"", unit, cmd);
+						if (!sdcard_external_mount(unit, cmd, "Monitor: D81 mount failure")) {
+							OSD(-1, -1, "Mounted (%d): %s", unit, cmd);
+						}
+					} else {
+						sdcard_unmount(unit);
+						OSD(-1, -1, "Unmounted (%d)", unit);
+					}
+				}
+			} else
+				umon_printf(UMON_SYNTAX_ERROR "unknown (or not implemented) Xemu special command: %s", cmd - 1);
+			break;
 		default:
 			umon_printf(UMON_SYNTAX_ERROR "unknown (or not implemented) command '%c'", cmd[-1]);
 			break;
 	}
 }
-
 
 
 /* ------------------------- SOCKET HANDLING, etc ------------------------- */

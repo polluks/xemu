@@ -1,6 +1,6 @@
 /* A work-in-progess MEGA65 (Commodore 65 clone origins) emulator
    Part of the Xemu project, please visit: https://github.com/lgblgblgb/xemu
-   Copyright (C)2016-2022 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
+   Copyright (C)2016-2023 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
    Copyright (C)2020-2022 Hernán Di Pietro <hernan.di.pietro@gmail.com>
 
 This program is free software; you can redistribute it and/or modify
@@ -28,10 +28,12 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
 #include "xemu/f011_core.h"
 #include "xemu/emutools_files.h"
 #include "io_mapper.h"
+#include "xemu/basic_text.h"
 
 
 #define SPRITE_SPRITE_COLLISION
 #define SPRITE_FG_COLLISION
+#define SPRITE_COORD_LATCHING
 
 
 const char *iomode_names[4] = { "VIC2", "VIC3", "BAD!", "VIC4" };
@@ -74,6 +76,10 @@ static Uint8 vic_pixel_readback_result[4];
 static Uint8 vic_color_register_mask = 0xFF;
 static Uint32 *used_palette;					// normally the same value as "palette" from vic4_palette.c but GOTOX RRB token can modify this! So this should be used
 static int EFFECTIVE_V400;
+#ifdef SPRITE_COORD_LATCHING
+static Uint8 sprite_is_being_rendered[8];
+#warning "Sprite coordinate latching is an experimental feature (SPRITE_COORD_LATCHING is defined)!"
+#endif
 
 // TODO: not really implemented just here ...
 static int etherbuffer_is_io_mapped = 0;
@@ -87,7 +93,9 @@ int videostd_changed = 0;
 static const char NTSC_STD_NAME[] = "NTSC";
 static const char PAL_STD_NAME[] = "PAL";
 int vic_readjust_sdl_viewport = 0;
-int vic4_disallow_video_std_change = 1;
+int vic4_disallow_videostd_change = 0;		// Disallows programs to change video std via register D06F, bit 7 (emulator internally writing that bit still can change video std though!)
+int vic4_registered_screenshot_request = 0;
+
 
 // VIC-IV Modeline Parameters
 // ----------------------------------------------------
@@ -179,7 +187,7 @@ void vic_init ( void )
 	// Init VIC4 stuffs
 	vic4_init_palette();
 	vic_reset();
-	c128_d030_reg = 0xFE;	// this may be set to 2MHz in the previous step, so be sure to set to FF here, BUT FIX: bit 0 should be inverted!!
+	c128_d030_reg = 0;	// make sure to set it to zero, FIXME: should we move this into vic_reset() which is also called from vic_init() but then would function only calling reset as well?!
 	machine_set_speed(0);
 	vic4_reset_display_counters();
 	DEBUG("VIC4: has been initialized." NL);
@@ -217,16 +225,21 @@ static XEMU_INLINE void pixel_readback ( void )
 void vic4_close_frame_access ( void )
 {
 	DEBUG("FRAME CLOSED" NL);
+#ifdef	SPRITE_COORD_LATCHING
+	// To avoid the problem when sprite rendering is not finished (at the very bottom of the screen, does not "fit"),
+	// thus the "end" condition in active rendering is never reached: that would be remain latched for the next frame then!
+	memset(sprite_is_being_rendered, 0, sizeof sprite_is_being_rendered);
+#endif
 	// Debug pixel-read back feature of MEGA65
 	pixel_readback();
-#ifdef XEMU_FILES_SCREENSHOT_SUPPORT
+#ifdef	XEMU_FILES_SCREENSHOT_SUPPORT
 	// Screenshot
-	if (XEMU_UNLIKELY(registered_screenshot_request)) {
+	if (XEMU_UNLIKELY(vic4_registered_screenshot_request)) {
 		unsigned int x1, y1, x2, y2;
 		xemu_get_viewport(&x1, &y1, &x2, &y2);
-		registered_screenshot_request = 0;
+		vic4_registered_screenshot_request = 0;
 		if (!xemu_screenshot_png(
-			NULL, NULL,
+			NULL, configdb.screenshot_and_exit,
 			1, 1,		// no ratio/zoom correction is applied
 			pixel_start + y1 * TEXTURE_WIDTH + x1,	// pixel pointer corresponding to the top left corner of the viewport
 			x2 - x1 + 1,	// width
@@ -236,6 +249,10 @@ void vic4_close_frame_access ( void )
 			const char *p = strrchr(xemu_screenshot_full_path, DIRSEP_CHR);
 			if (p)
 				OSD(-1, -1, "%s", p + 1);
+		}
+		if (configdb.screenshot_and_exit) {
+			DEBUGPRINT("VIC4: exiting on 'exit-on-screenshot' feature." NL);
+			XEMUEXIT(0);
 		}
 	}
 #endif
@@ -383,7 +400,7 @@ void vic4_open_frame_access ( void )
 	// Though it can be changed any time, this kind of information really only can be applied
 	// at frame level. Thus we check here, if during the previous frame there was change
 	// and apply the video mode set for our just started new frame.
-	Uint8 new_mode = (configdb.force_videostd >= 0) ? configdb.force_videostd : !!(vic_registers[0x6F] & 0x80);
+	const Uint8 new_mode = !!(vic_registers[0x6F] & 0x80);
 	if (XEMU_UNLIKELY(new_mode != videostd_id)) {
 		// We have video mode change!
 		videostd_id = new_mode;
@@ -429,6 +446,17 @@ void vic4_open_frame_access ( void )
 			xemu_set_viewport(0, 0, TEXTURE_WIDTH - 1, max_rasters - 1, XEMU_VIEWPORT_ADJUST_LOGICAL_SIZE);
 		else
 			xemu_set_viewport(48, 0, TEXTURE_WIDTH - 48, visible_area_height - 1, XEMU_VIEWPORT_ADJUST_LOGICAL_SIZE);
+	}
+}
+
+
+// This works even if vic4_disallow_videostd_change is true!
+void vic4_set_videostd ( const int mode, const char *comment )
+{
+	// other values are ignored, since the caller may have the policy that -1 means leave it as it was, etc
+	if (mode == 0 || mode == 1) {
+		vic_registers[0x6F] = (vic_registers[0x6F] & 0x7F) | (mode << 7);
+		DEBUGPRINT("VIC: setting %s mode (%s)" NL, mode ? "NTSC" : "PAL", comment ? comment : EMPTY_STR);
 	}
 }
 
@@ -538,6 +566,10 @@ static const char vic_registers_internal_mode_names[] = {'4', '3', '2'};
 */
 void vic_write_reg ( unsigned int addr, Uint8 data )
 {
+#if 0
+	if (addr == 0x7D || addr == 0x7E || addr == 0x7F)
+		DEBUGPRINT("VIC: crosshair reg $%02X was written with value $%03X at PC=$%04X" NL, addr, data, cpu65.old_pc);
+#endif
 	//DEBUGPRINT("VIC%c: write reg $%02X (internally $%03X) with data $%02X" NL, XEMU_LIKELY(addr < 0x180) ? vic_registers_internal_mode_names[addr >> 7] : '?', addr & 0x7F, addr, data);
 	// IMPORTANT NOTE: writing of vic_registers[] happens only *AFTER* this switch/case construct! This means if you need to do this before, you must do it manually at the right "case"!!!!
 	// if you do so, you can even use "return" instead of "break" to save the then-redundant write of the register
@@ -594,9 +626,13 @@ void vic_write_reg ( unsigned int addr, Uint8 data )
 			break;
 		CASE_VIC_ALL(0x1E):	// sprite-sprite collision
 			vic_registers[0x1E] = 0;
+			interrupt_status &= 255 - 4;
+			interrupt_checker();
 			return;
 		CASE_VIC_ALL(0x1F):	// sprite-data collision
 			vic_registers[0x1F] = 0;
+			interrupt_status &= 255 - 2;
+			interrupt_checker();
 			return;
 		CASE_VIC_2(0x20): CASE_VIC_2(0x21): CASE_VIC_2(0x22): CASE_VIC_2(0x23): CASE_VIC_2(0x24): CASE_VIC_2(0x25): CASE_VIC_2(0x26): CASE_VIC_2(0x27):
 		CASE_VIC_2(0x28): CASE_VIC_2(0x29): CASE_VIC_2(0x2A): CASE_VIC_2(0x2B): CASE_VIC_2(0x2C): CASE_VIC_2(0x2D): CASE_VIC_2(0x2E):
@@ -611,7 +647,9 @@ void vic_write_reg ( unsigned int addr, Uint8 data )
 		CASE_VIC_4(0x28): CASE_VIC_4(0x29): CASE_VIC_4(0x2A): CASE_VIC_4(0x2B): CASE_VIC_4(0x2C): CASE_VIC_4(0x2D): CASE_VIC_4(0x2E):
 			break;		// colour-related registers are full 8 bit for VIC-IV and VIC-III
 		CASE_VIC_ALL(0x2F):	// the KEY register, it must be handled in ALL VIC modes, to be able to set VIC I/O mode
-			do {
+			// FIXME? in hypervisor mode, it's not possible to alter I/O mode?? Thus I just ignore write in that case.
+			// This seems to make freezer actually starting in Xemu, first time ever :-O
+			if (!in_hypervisor) {
 				int vic_new_iomode;
 				etherbuffer_is_io_mapped = 0;
 				if (data == 0x96 && vic_registers[0x2F] == 0xA5) {
@@ -634,10 +672,13 @@ void vic_write_reg ( unsigned int addr, Uint8 data )
 					DEBUG("VIC: changing I/O mode %d(%s) -> %d(%s)" NL, vic_iomode, iomode_names[vic_iomode], vic_new_iomode, iomode_names[vic_new_iomode]);
 					vic_iomode = vic_new_iomode;
 				}
-			} while(0);
+			} else
+				DEBUGPRINT("VIC: warning: I/O mode KEY $D02F register wanted to be written (with $%02X) in hypervisor mode! PC=$%04X" NL, data, cpu65.old_pc);
 			break;
 		CASE_VIC_2(0x30):	// this register is _SPECIAL_, and exists only in VIC-II (C64) I/O mode: C128-style "2MHz fast" mode ...
-			DEBUGPRINT("VIC: Write 0xD030 in VIC-II I/O mode with data $%02x @ PC=$%04X (hypervisor mode: %d)" NL, data, cpu65.old_pc, !!in_hypervisor);
+			// NOTE: in theory it's NOT possible to write this reg in hypervisor mode anymore, as then **always** VIC-4 I/O mode is assumed, if I'm right!
+			DEBUGPRINT("VIC: Write $D030 in VIC-II I/O mode with data $%02x @ PC=$%04X (hypervisor mode: %d)" NL, data, cpu65.old_pc, !!in_hypervisor);
+			data &= 1;	// use only bit0
 			c128_d030_reg = data;
 			machine_set_speed(0);
 			return;		// it IS important to have return here, since it's not a "real" VIC-4 mode register's view in another mode!!
@@ -726,7 +767,7 @@ void vic_write_reg ( unsigned int addr, Uint8 data )
 			break;
 		CASE_VIC_4(0x6F):
 			// If video standard change was disallowed, we keep bit7 as is, regardless of the write
-			if (vic4_disallow_video_std_change)
+			if (vic4_disallow_videostd_change)
 				data = (vic_registers[0x6F] & 0x80) | (data & 0x7F);
 			// We trigger video setup at next frame automatically, no need do anything further here
 			break;
@@ -821,9 +862,14 @@ Uint8 vic_read_reg ( int unsigned addr )
 		CASE_VIC_ALL(0x1D):	// sprite-X expansion
 			break;
 		CASE_VIC_ALL(0x1E):	// sprite-sprite collision
+			vic_registers[0x1E] = 0;
+			interrupt_status &= 255 - 4;
+			interrupt_checker();
+			break;
 		CASE_VIC_ALL(0x1F):	// sprite-data collision
-			vic_registers[addr & 0x7F] = 0;	// 1E and 1F registers are cleared on read!
-			// FIXME: needs to re-check interrupts!
+			vic_registers[0x1F] = 0;
+			interrupt_status &= 255 - 2;
+			interrupt_checker();
 			break;
 		CASE_VIC_2(0x20): CASE_VIC_2(0x21): CASE_VIC_2(0x22): CASE_VIC_2(0x23): CASE_VIC_2(0x24): CASE_VIC_2(0x25): CASE_VIC_2(0x26): CASE_VIC_2(0x27):
 		CASE_VIC_2(0x28): CASE_VIC_2(0x29): CASE_VIC_2(0x2A): CASE_VIC_2(0x2B): CASE_VIC_2(0x2C): CASE_VIC_2(0x2D): CASE_VIC_2(0x2E):
@@ -915,16 +961,20 @@ Uint8 vic_read_reg ( int unsigned addr )
 #undef CASE_VIC_3_4
 
 
-
+// A very interesting thing happening here. If I want to check only if is_sprite[pos] is zero,
+// I found, that the sprite can collide with itself ... Looks like it sees it's "own data"
+// somehow which should be impossible as "is_sprite" is zeroed after each scanline. No idea,
+// maybe some non-integer stepping make this? Anyway, I had to use another algorithm because of
+// this problem. - LGB
 #ifdef	SPRITE_SPRITE_COLLISION
 #	warning "Sprite-sprite collision is an experimental feature (SPRITE_SPRITE_COLLISION is defined)!"
-#	define DO_SPRITE_SPRITE_COLLISION(pos,cond) do {	\
-		if (cond) {					\
-			const Uint8 sp = is_sprite[pos];	\
-			is_sprite[pos] = sp | sprbmask;		\
-			if (sp) 				\
-				vic_registers[0x1E] |= sp | sprbmask;	\
-		}						\
+#	define DO_SPRITE_SPRITE_COLLISION(pos,cond) do {		\
+		if (cond) {						\
+			const Uint8 sp = is_sprite[pos] | sprbmask;	\
+			is_sprite[pos] = sp;				\
+			if (XEMU_UNLIKELY(sp != sprbmask))		\
+				vic_registers[0x1E] |= sp;		\
+		}							\
 	} while (0)
 #ifndef	SPRITE_ANY_COLLISION
 #define	SPRITE_ANY_COLLISION
@@ -1062,31 +1112,48 @@ static XEMU_INLINE void vic4_do_sprites ( void )
 	// In multicolor mode (MCM=1), the bit combinations "00" and "01" belong to the background
 	// and "10" and "11" to the foreground whereas in standard mode (MCM=0),
 	// cleared pixels belong to the background and set pixels to the foreground.
+#ifdef	SPRITE_COORD_LATCHING
+	static int sprite_x_latch[8], sprite_y_latch[8];
+#endif
 	const int reg_tiling = REG_SPRTILEN;
 	for (int sprnum = 7; sprnum >= 0; sprnum--) {
 		if (REG_SPRITE_ENABLE & (1 << sprnum)) {
-			const int y_adjust = SPRITE_V400(sprnum) ? 0 : (REG_SPRITE_Y_ADJUST - 2);
 			const int spriteHeight = SPRITE_EXTHEIGHT(sprnum) ? REG_SPRHGHT : 21;
-			const int x_display_pos = (REG_SPR640 ? 1 : 2) * SPRITE_POS_X(sprnum) + (REG_SPR640 ? 1 : SPRITE_FIRST_X);
-			const int y_display_pos = ((SPRITE_V400(sprnum) ? 1 : 2) * (SPRITE_POS_Y(sprnum) - y_adjust)) ;
-
+			const int y_display_pos =
+#ifdef				SPRITE_COORD_LATCHING
+				sprite_is_being_rendered[sprnum] ? sprite_y_latch[sprnum] :
+#endif
+				((SPRITE_V400(sprnum) ? 1 : 2) * (SPRITE_POS_Y(sprnum) - (SPRITE_V400(sprnum) ? 0 : (REG_SPRITE_Y_ADJUST - 2))));
 			int sprite_row_in_raster = ycounter - y_display_pos;
-
 			if (!SPRITE_V400(sprnum))
 				sprite_row_in_raster = sprite_row_in_raster >> 1;
-
 			if (SPRITE_VERT_2X(sprnum))
 				sprite_row_in_raster = sprite_row_in_raster >> 1;
-
 			if (sprite_row_in_raster >= 0 && sprite_row_in_raster < spriteHeight) {
+				// FIXME: it's currently unknown if X coordinate is latched as well, now I assume it is ...
+				const int x_display_pos =
+#ifdef					SPRITE_COORD_LATCHING
+					sprite_is_being_rendered[sprnum] ? sprite_x_latch[sprnum] :
+#endif
+					((REG_SPR640 ? 1 : 2) * SPRITE_POS_X(sprnum) + (REG_SPR640 ? 1 : SPRITE_FIRST_X));
+#ifdef				SPRITE_COORD_LATCHING
+				if (sprite_row_in_raster == spriteHeight - 1) {
+					// the last line of sprite, turn off the latched signal
+					sprite_is_being_rendered[sprnum] = 0;
+				} else if (!sprite_is_being_rendered[sprnum]) {
+					// first - detected - render event for the sprite, let's latch it
+					sprite_is_being_rendered[sprnum] = 1;
+					sprite_x_latch[sprnum] = x_display_pos;
+					sprite_y_latch[sprnum] = y_display_pos;
+				}
+#endif
 				const int widthBytes = SPRITE_EXTWIDTH(sprnum) ? 8 : 3;
 				// Mask-out bits 0-3, 23-19 if SPRPTR16 enabled
 				const Uint32 sprite_pointer_addr = SPRITE_16BITPOINTER ? (SPRITE_POINTER_ADDR & 0x8FFFF0) : SPRITE_POINTER_ADDR;
 				const Uint8 *sprite_data_pointer = main_ram + sprite_pointer_addr + sprnum * ((SPRITE_16BITPOINTER >> 7) + 1);
 				const Uint32 sprite_data_addr = SPRITE_16BITPOINTER ?
 					64 * ((*(sprite_data_pointer + 1) << 8) | (*sprite_data_pointer))
-					: ((64 * (*sprite_data_pointer)) | ( ((~last_dd00_bits) & 0x3)) << 14);
-
+					: ((64 * (*sprite_data_pointer)) | (SPRITE_POINTER_ADDR & 0xC000)); // Use bits 14-15 (this can be set from $DD00 if HOTREG is ENABLED)
 				//DEBUGPRINT("VIC: Sprite %d data at $%08X " NL, sprnum, sprite_data_addr);
 				const Uint8 *sprite_data = main_ram + sprite_data_addr;
 				const Uint8 *row_data = sprite_data + widthBytes * sprite_row_in_raster;
@@ -1099,6 +1166,12 @@ static XEMU_INLINE void vic4_do_sprites ( void )
 				else
 					vic4_draw_sprite_row_mono(sprnum, x_display_pos, row_data, xscale, do_tiling);
 			}
+		} else {
+#ifdef			SPRITE_COORD_LATCHING
+			// To avoid the problem when sprite gets disabled during its rendering so remains latched for the whole rest of the frame,
+			// since the "end" condition is never hit above on its - would be - active rendering region (by its height).
+			sprite_is_being_rendered[sprnum] = 0;
+#endif
 		}
 	}
 }
@@ -1175,7 +1248,7 @@ static XEMU_INLINE void vic4_render_fullcolor_char_row ( const Uint8* char_row, 
 
 
 // 16-color (Nybl) mode (4-bit per pixel / 16 pixel wide characters)
-static XEMU_INLINE void vic4_render_16color_char_row ( const Uint8* char_row, const int glyph_width, const Uint32 bg_sdl_color, const Uint32 *palette16, const int hflip )
+static XEMU_INLINE void vic4_render_16color_char_row ( const Uint8* char_row, const int glyph_width, const Uint32 bg_sdl_color, const Uint32 fg_sdl_color, const Uint32 *palette16, const int hflip )
 {
 	for (float cx = 0; cx < glyph_width && xcounter < border_x_right; cx += char_x_step) {
 		Uint8 char_data;
@@ -1194,7 +1267,7 @@ static XEMU_INLINE void vic4_render_16color_char_row ( const Uint8* char_row, co
 		}
 		is_fg[xcounter++] = char_data;
 		if (char_data)
-			*current_pixel = palette16[char_data];
+			*current_pixel = (char_data != 15) ? palette16[char_data] : fg_sdl_color;
 		else if (enable_bg_paint)
 			*current_pixel = bg_sdl_color;
 		current_pixel++;
@@ -1299,7 +1372,7 @@ static XEMU_INLINE Uint8 *get_charset_effective_addr ( void )
 // color modes:
 //
 // - Monochrome (Bg/Fg)
-// - VICII Multicolor
+// - VIC-II Multicolor
 // - 16-color
 // - 256-color
 //
@@ -1314,8 +1387,8 @@ static XEMU_INLINE void vic4_render_char_raster ( void )
 	enable_bg_paint = 1;
 	const Uint8 *row_data_base_addr = get_charset_effective_addr();	// FIXME: is it OK that I moved here, before the loop?
 	if (display_row <= display_row_count) {
-		Uint8 *colour_ram_current_ptr = colour_ram + COLOUR_RAM_OFFSET + (display_row * LINESTEP_BYTES);
-		Uint8 *screen_ram_current_ptr = main_ram + SCREEN_ADDR + (display_row * LINESTEP_BYTES);
+		Uint32 colour_ram_current_addr = COLOUR_RAM_OFFSET + (display_row * LINESTEP_BYTES);
+		Uint32 screen_ram_current_addr = SCREEN_ADDR + (display_row * LINESTEP_BYTES);
 		// Account for Chargen X-displacement
 		for (Uint32 *p = current_pixel; p < current_pixel + (CHARGEN_X_START - border_x_left); p++)
 			*p = palette[REG_SCREEN_COLOR];
@@ -1325,11 +1398,11 @@ static XEMU_INLINE void vic4_render_char_raster ( void )
 		Uint8 char_fetch_offset = 0;
 		// Chargen starts here.
 		while (line_char_index < REG_CHRCOUNT) {
-			Uint16 color_data = *(colour_ram_current_ptr++);
-			Uint16 char_value = *(screen_ram_current_ptr++);
+			Uint16 color_data = colour_ram[(colour_ram_current_addr++) & 0x07FFF];
+			Uint16 char_value = main_ram[(screen_ram_current_addr++) & 0x7FFFF];
 			if (REG_16BITCHARSET) {
-				color_data = (color_data << 8) | (*(colour_ram_current_ptr++));
-				char_value = char_value | (*(screen_ram_current_ptr++) << 8);
+				color_data = (color_data << 8) | colour_ram[(colour_ram_current_addr++) & 0x07FFF];
+				char_value = char_value | (main_ram[(screen_ram_current_addr++) & 0x7FFFF] << 8);
 				if (XEMU_UNLIKELY(SXA_GOTO_X(color_data))) {
 					// ---- Start of the GOTOX re-positioning functionality implementation, tricky one ----
 					xcounter = (char_value & 0x3FF);	// first, extract the goto 'X' value as an usigned number
@@ -1369,10 +1442,13 @@ static XEMU_INLINE void vic4_render_char_raster ( void )
 				}
 			}
 			// Background and foreground colors
-			const Uint8 char_fgcolor = color_data & 0xF;
+			//const Uint8 char_fgcolor = color_data & 0xF;	// FIXME: remove this! commented out since "&0xF" causes problems, replaced any char_fgcolor refs later with color_data refs
 			const Uint16 char_id = REG_EBM ? (char_value & 0x3f) : char_value & 0x1fff; // up to 8192 characters (13-bit)
 			const Uint8 char_bgcolor = REG_EBM ? vic_registers[0x21 + ((char_value >> 6) & 3)] : REG_SCREEN_COLOR;
-			const Uint8 glyph_trim = SXA_TRIM_RIGHT_BITS012(char_value) + (SXA_TRIM_RIGHT_BIT3(color_data) ? 8 : 0);
+			// FIXME: the commented line below seems not to work in a way as MEGA65 does, there is some disturbance in the force even on the MEGA65 it seems [?]
+			//        This change seems to fix MegaPoly intro to allow it to work on Xemu as well. Suggested by Mirage_BD (the author of MegaPoly)
+			// const Uint8 glyph_trim = SXA_TRIM_RIGHT_BITS012(char_value); // + (SXA_TRIM_RIGHT_BIT3(color_data) ? 8 : 0);
+			const Uint8 glyph_trim = SXA_TRIM_RIGHT_BITS012(char_value) + ((SXA_TRIM_RIGHT_BIT3(color_data) & (SXA_4BIT_PER_PIXEL(color_data)>>1)) ? 8 : 0);
 			// Default fetch from char mode.
 			const int sel_char_row = (XEMU_UNLIKELY(SXA_VERTICAL_FLIP(color_data)) ? 7 - char_row : char_row);
 			// Render character cell row
@@ -1381,20 +1457,21 @@ static XEMU_INLINE void vic4_render_char_raster ( void )
 					main_ram + (((char_id * 64) + ((sel_char_row + char_fetch_offset) * 8)) & 0x7FFFF),
 					16 - glyph_trim,
 					used_palette[char_bgcolor],		// bg SDL colour
+					used_palette[color_data & 0xFF],	// fg SDL colour
 					used_palette + (color_data & 0xF0),	// palette(16) pointer
 					SXA_HORIZONTAL_FLIP(color_data)		// hflip?
 				);
 			} else if (CHAR_IS256_COLOR(char_id)) {	// 256-color character
 				// fgcolor in case of FCM should mean colour index $FF
-				// FIXME: check if the passed palette[char_fgcolor] is correct or another index should be used for that $FF colour stuff
+				// FIXME: check if the passed palette[color_data & 0xFF] is correct or another index should be used for that $FF colour stuff
 				vic4_render_fullcolor_char_row(
 					main_ram + (((char_id * 64) + ((sel_char_row + char_fetch_offset) * 8)) & 0x7FFFF),
 					8 - glyph_trim,
 					used_palette[char_bgcolor],		// bg SDL colour
-					used_palette[char_fgcolor],		// fg SDL colour
+					used_palette[color_data & 0xFF],	// fg SDL colour
 					SXA_HORIZONTAL_FLIP(color_data)		// hflip?
 				);
-			} else if ((REG_MCM && (char_fgcolor & 8)) || (REG_MCM && REG_BMM)) {	// Multicolor character
+			} else if ((REG_MCM && (color_data & 8)) || (REG_MCM && REG_BMM)) {	// Multicolor character
 				// using static vars: faster in a rapid loop like this, no need to re-adjust stack pointer all the time to allocate space and this way using constant memory address
 				// also, as an optimization, later, some value can be re-used and not always initialized here, when in reality VIC
 				// registers in current Xemu cannot change within a scanline anyway (ie, scanline precision based emulation/rendering)
@@ -1411,7 +1488,7 @@ static XEMU_INLINE void vic4_render_char_raster ( void )
 					// value 00 is common /w or w/o BMM so not initialized here
 					color_source_mcm[1] = REG_MULTICOLOR_1;	// 01
 					color_source_mcm[2] = REG_MULTICOLOR_2;	// 10
-					color_source_mcm[3] = char_fgcolor & 7;	// 11
+					color_source_mcm[3] = color_data & 7;	// 11
 					char_byte = *(row_data_base_addr + (char_id * 8) + sel_char_row);
 				}
 				// FIXME: is this really a thing to have FLIP in bitmap mode AS WELL?!
@@ -1427,7 +1504,7 @@ static XEMU_INLINE void vic4_render_char_raster ( void )
 				Uint8 char_byte, char_bgcolor_now, char_fgcolor_now;
 				if (!REG_BMM) {
 					char_bgcolor_now = char_bgcolor;
-					char_fgcolor_now = char_fgcolor;
+					char_fgcolor_now = color_data & 0xF;	// FIXME: is the "&" mask OK as being 0xF?
 					char_byte = *(row_data_base_addr + (char_id * 8) + sel_char_row);
 				} else {
 					char_bgcolor_now = char_value & 0xF;
@@ -1519,6 +1596,16 @@ int vic4_render_scanline ( void )
 
 	if (XEMU_LIKELY(REG_DISPLAYENABLE) && (ycounter >= BORDER_Y_TOP && ycounter < BORDER_Y_BOTTOM)) {
 		vic4_do_sprites();
+		if (vic_registers[0x1E])		// sprite-sprite collision
+			interrupt_status |= 4;
+		else
+			interrupt_status &= 255 - 4;
+		if (vic_registers[0x1F])		// sprite-foreground collision
+			interrupt_status |= 2;
+		else
+			interrupt_status &= 255 - 2;
+		// I don't call interrupt_checker() as it will be on the next call of the current function.
+		// That check then is part of function check_raster_interrupt. Yes a bit confusing and messy ... - LGB
 	}
 
 	ycounter++;
@@ -1534,6 +1621,60 @@ int vic4_render_scanline ( void )
 		return 1;
 	}
 	return 0;
+}
+
+
+/* --- AUX FUNCTIONS FOR NON-ESSENTIAL THINGS (query current text screen parameters for other components, put/get screen content as ASCII) --- */
+
+
+int vic4_query_screen_width ( void )
+{
+	return REG_H640 ? 80 : 40;
+}
+
+
+int vic4_query_screen_height ( void )
+{
+	return EFFECTIVE_V400 ? 50 : 25;
+}
+
+
+Uint8 *vic4_query_screen_address ( void )
+{
+	return main_ram + (SCREEN_ADDR & 0x7FFFF);
+}
+
+
+Uint8 *vic4_query_colour_address ( void )
+{
+	return colour_ram + COLOUR_RAM_OFFSET;
+}
+
+
+char *vic4_textshot ( void )
+{
+	char text[8192];
+	char *result = xemu_cbm_screen_to_text(
+		text,
+		sizeof text,
+		vic4_query_screen_address(),
+		vic4_query_screen_width(),
+		vic4_query_screen_height(),
+		(vic_registers[0x18] & 2)	// lowercase font? try to auto-detect by checking selected address chargen addr, LSB
+	);
+	return result ? xemu_strdup(result) : NULL;
+}
+
+
+int vic4_textinsert ( const char *text )
+{
+	return xemu_cbm_text_to_screen(
+		vic4_query_screen_address(),
+		vic4_query_screen_width(),
+		vic4_query_screen_height(),
+		text,				// text buffer as input
+		(vic_registers[0x18] & 2)	// lowercase font? try to auto-detect by checking selected address chargen addr, LSB
+	);
 }
 
 

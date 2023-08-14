@@ -1,6 +1,6 @@
 /* Various D81 access method for F011 core, for Xemu / C65 and M65 emulators.
    Part of the Xemu project, please visit: https://github.com/lgblgblgb/xemu
-   Copyright (C)2016-2022 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
+   Copyright (C)2016-2023 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -42,11 +42,6 @@ static struct {
 } d81[8];
 static int enable_mode_transient_callback = -1;
 
-// Note: D81_SIZE is defined in the header file, unlike these:
-#define D64_SIZE	174848
-#define D71_SIZE	349696
-#define D65_SIZE	2785280
-
 #define IS_RO(p)	(!!((p) & D81ACCESS_RO))
 #define IS_RW(p)	(!((p) & D81ACCESS_RO))
 #define HAS_DISK(p)	(((p)&& 0xFF) != D81ACCESS_EMPTY)
@@ -69,13 +64,19 @@ void d81access_init ( void )
 }
 
 
-int d81access_get_mode ( int which )
+int d81access_get_mode ( const int which )
 {
 	return d81[which].mode;
 }
 
 
-void d81access_close ( int which )
+int d81access_get_size ( const int which )
+{
+	return d81[which].image_size;
+}
+
+
+void d81access_close ( const int which )
 {
 	if (d81[which].fd >= 0) {
 		if (IS_AUTOCLOSE(d81[which].mode)) {
@@ -536,12 +537,8 @@ static int check_io_req_params ( const int which, const Uint8 side, const Uint8 
 }
 
 
-int d81access_read_sect  ( const int which, Uint8 *buffer, const Uint8 side, const Uint8 track, const Uint8 sector, const int sector_size )
+int d81access_read_sect_raw ( const int which, Uint8 *buffer, const int offset, const int sector_size, const int io_size )
 {
-	int io_size;
-	const int offset = check_io_req_params(which, side, track, sector, sector_size, &io_size);
-	if (XEMU_UNLIKELY(offset < 0))
-		return offset;	// return negative number as error
 	switch (d81[which].mode & 0xFF) {
 		case D81ACCESS_EMPTY:
 			return -1;
@@ -569,14 +566,20 @@ int d81access_read_sect  ( const int which, Uint8 *buffer, const Uint8 side, con
 }
 
 
-int d81access_write_sect ( const int which, Uint8 *buffer, const Uint8 side, const Uint8 track, const Uint8 sector, const int sector_size )
+int d81access_read_sect  ( const int which, Uint8 *buffer, const Uint8 side, const Uint8 track, const Uint8 sector, const int sector_size )
 {
 	int io_size;
 	const int offset = check_io_req_params(which, side, track, sector, sector_size, &io_size);
-	if (IS_RO(d81[which].mode))
-		return -1;
 	if (XEMU_UNLIKELY(offset < 0))
 		return offset;	// return negative number as error
+	return d81access_read_sect_raw(which, buffer, offset, sector_size, io_size);
+}
+
+
+int d81access_write_sect_raw ( const int which, Uint8 *buffer, const int offset, const int sector_size, const int io_size )
+{
+	if (IS_RO(d81[which].mode))
+		return -1;
 	switch (d81[which].mode & 0xFF) {
 		case D81ACCESS_EMPTY:
 			return -1;
@@ -593,6 +596,16 @@ int d81access_write_sect ( const int which, Uint8 *buffer, const Uint8 side, con
 	}
 	FATAL("D81ACCESS: d81access_write_sect() unhandled case" NL);
 	return -1;
+}
+
+
+int d81access_write_sect ( const int which, Uint8 *buffer, const Uint8 side, const Uint8 track, const Uint8 sector, const int sector_size )
+{
+	int io_size;
+	const int offset = check_io_req_params(which, side, track, sector, sector_size, &io_size);
+	if (XEMU_UNLIKELY(offset < 0))
+		return offset;	// return negative number as error
+	return d81access_write_sect_raw(which, buffer, offset, sector_size, io_size);
 }
 
 
@@ -672,11 +685,11 @@ Uint8 *d81access_create_image ( Uint8 *img, const char *diskname, const int name
 		diskname = diskname_default;
 		namelen = strlen(diskname_default);
 	}
-	unsigned int diskid = 0;
+	unsigned int diskid = namelen + ((namelen + 1) << 8);
 	DEBUGPRINT("D81ACCESS: creating memory image of a new D81 disk \"");
-	for (int i = 0; i < namelen; i++) {
+	for (unsigned int i = 0; i < namelen; i++) {
 		Uint8 c = (Uint8)diskname[i];
-		diskid += (unsigned int)c;
+		diskid += (unsigned int)c + (i << 5);
 		if (c >= 'a' && c <= 'z')
 			c -= 32;
 		else if (c < 32 || c >= 0x7F)
@@ -684,9 +697,45 @@ Uint8 *d81access_create_image ( Uint8 *img, const char *diskname, const int name
 		img[0x61804 + i] = c;
 		DEBUGPRINT("%c", c);
 	}
-	diskid = (diskid ^ (diskid >> 3)) % (26 * 26);
-	img[0x61816] = 'A' + (diskid / 26);
-	img[0x61817] = 'A' + (diskid % 26);
+	diskid = (diskid ^ (diskid >> 5));
+	for (unsigned int i = 0; i < 2; i++, diskid /= 36) {
+		Uint8 c = diskid % 36;
+		c = c < 26 ? c + 'A' : c - 26 + '0';
+		img[0x61816 + i] = c;
+		img[0x61904 + i] = c;
+		img[0x61a04 + i] = c;
+	}
 	DEBUGPRINT("\",\"%c%c\"" NL, img[0x61816], img[0x61817]);
 	return img;
+}
+
+
+// Return values:
+//	0 = OK, image created
+//	-1 = some error
+//	-2 = file existed before, and do_overwrite as not specified
+int d81access_create_image_file ( const char *fn, const char *diskname, const int do_overwrite, const char *cry )
+{
+	char fullpath[PATH_MAX + 1];
+	const int fd = xemu_open_file(fn, O_WRONLY | O_CREAT | O_TRUNC | (!do_overwrite ? O_EXCL : 0), NULL, fullpath);
+	if (fd < 0) {
+		const int ret = (errno == EEXIST) ? -2 : -1;
+		if (cry)
+			ERROR_WINDOW("%s [D81-CREATE]\n%s\n%s", cry, fn, strerror(errno));
+		if (ret == -2)
+			DEBUGPRINT("D81ACCESS: D81 image \"%s\" existed before." NL, fn);
+		return ret;
+	}
+	Uint8 *img = d81access_create_image(NULL, diskname ? diskname : fn, !diskname);
+	const int written = xemu_safe_write(fd, img, D81_SIZE);
+	xemu_os_close(fd);
+	free(img);
+	if (written != D81_SIZE) {
+		if (cry)
+			ERROR_WINDOW("%s [D81-WRITE]\n%s\n%s", cry, fullpath, strerror(errno));
+		xemu_os_unlink(fullpath);
+		return -1;
+	}
+	DEBUGPRINT("D81ACCESS: new disk image file \"%s\" has been successfully created (overwrite policy %d)." NL, fullpath, do_overwrite);
+	return 0;
 }

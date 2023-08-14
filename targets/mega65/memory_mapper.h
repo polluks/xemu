@@ -1,6 +1,6 @@
 /* A work-in-progess MEGA65 (Commodore 65 clone origins) emulator
    Part of the Xemu project, please visit: https://github.com/lgblgblgb/xemu
-   Copyright (C)2017-2022 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
+   Copyright (C)2017-2023 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -31,6 +31,13 @@ extern void  memory_debug_write_phys_addr ( int addr, Uint8 data );
 extern Uint8 memory_debug_read_cpu_addr   ( Uint16 addr );
 extern void  memory_debug_write_cpu_addr  ( Uint16 addr, Uint8 data );
 
+// DMA implementation related, used by dma65.c:
+extern Uint8 memory_dma_source_mreader ( int addr );
+extern void  memory_dma_source_mwriter ( int addr, Uint8 data );
+extern Uint8 memory_dma_target_mreader ( int addr );
+extern void  memory_dma_target_mwriter ( int addr, Uint8 data );
+extern Uint8 memory_dma_list_reader    ( int addr );
+
 //#define SIZEOF_CHIP_RAM  0x20000
 //#define SIZEOF_FAST_RAM  0x20000
 //#define SIZEOF_EXTRA_RAM 0x20000
@@ -50,5 +57,13 @@ extern Uint8 slow_ram[SLOW_RAM_SIZE];
 //#define extra_ram (main_ram + 0x40000)
 
 extern int cpu_rmw_old_data;
+
+static XEMU_INLINE void write_colour_ram ( const int addr, const Uint8 data )
+{
+	colour_ram[addr] = data;
+	// we also need to update the corresponding part of the main RAM, if it's the first 2K of the colour RAM!
+	if (addr < 2048)
+		main_ram[addr + 0x1F800] = data;
+}
 
 #endif

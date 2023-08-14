@@ -1,6 +1,6 @@
 /* A work-in-progess MEGA65 (Commodore 65 clone origins) emulator
    Part of the Xemu project, please visit: https://github.com/lgblgblgb/xemu
-   Copyright (C)2016-2021 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
+   Copyright (C)2016-2023 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -29,18 +29,30 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
 
 struct configdb_st {
 	int	fullscreen_requested;
+	int	cpusinglestep;
 	char	*disk8;
 	char	*disk9;
 	char	*fpga;
-	char	*kickup;
-	char	*kickuplist;
-	char	*loadbanner;
-	char	*loadc000;
-	char	*loadcram;
-	char	*loadrom;
+	char	*hickup;
+	char	*hickuprep;
+	char	*extbanner;
+	char	*extcramutils;
+	char	*extinitrom;
+	char	*extchrwom;
+	char	*extflashutil;
+	char	*extonboard;
+	char	*extfreezer;
+	char	*hdosdir;
+	char	*defaultdir;
+	char	*rom;
+	int	romfromsd;
+	int	defd81fromsd;
+	int	testing;
 	char	*prg;
 	char	*sdimg;
 	char	*dumpmem;
+	char	*dumpscreen;
+	char	*screenshot_and_exit;
 #ifdef XEMU_SNAPSHOT_SUPPORT
 	char	*snapload;
 	char	*snapsave;
@@ -58,27 +70,27 @@ struct configdb_st {
 	char	*keymap;
 #endif
 	char	*selectedgui;
-	int	force_videostd;
-	int	init_videostd;
+	int	lock_videostd;
+	int	videostd;
 	int	fullborders;
+	int	hdosvirt;
 	int	show_drive_led;
+	int	allowfreezer;
 	int	hyperdebug;
+	int	hyperdebugfreezer;
 	int	hyperserialascii;
-	int	forcerom;
-	int	stubrom;
-	int	force_upload_fonts;
+	int	usestubrom;
+	int	useinitrom;
+	int	useutilmenu;
 #ifdef VIRTUAL_DISK_IMAGE_SUPPORT
 	int	virtsd;
 #endif
-#ifdef FAKE_TYPING_SUPPORT
 	int	go64;
 	int	autoload;
-#endif
 	int	skip_unhandled_mem;
 	int	syscon;
-	int	dmarev;
 	int	mega65_model;		// $FF = Xemu/others, 1/2/3 = MEGA65 PCB rev 1/2/3, $40=nexys4, $41=nexys4ddr, $42=nexys4ddr-widget, $FD=wukong, $FE=simulation
-	int	kicked;
+	int	hicked;
 	int	prgmode;
 	int	rtc_hour_offset;
 #ifdef HAVE_XEMU_UMON

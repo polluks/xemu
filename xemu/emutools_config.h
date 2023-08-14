@@ -1,5 +1,5 @@
 /* Part of the Xemu project, please visit: https://github.com/lgblgblgb/xemu
-   Copyright (C)2016-2022 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
+   Copyright (C)2016-2023 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -40,11 +40,17 @@ typedef EMUCFG_PARSER_CALLBACK_RET_TYPE (*xemucfg_parser_callback_func_t)( EMUCF
 #define XEMUCFG_FLAG_FIRST_ONLY	2
 #define XEMUCFG_FLAG_DUMMY	4
 #define XEMUCFG_FLAG_FILE_ONLY	8
+#define XEMUCFG_FLAG_NO_SAVE    16
+
+enum xemutools_config_source {
+	CONFIG_SOURCE_DEFAULT = 0, CONFIG_SOURCE_CLI, CONFIG_SOURCE_FILE, CONFIG_SOURCE_RUNTIME
+};
 
 struct xemutools_config_st {
 	struct xemutools_config_st *next;
 	const char *name;
 	enum xemutools_option_type type;
+	enum xemutools_config_source source;
 	const char *help;
 	unsigned int flags;
 	union {
@@ -136,7 +142,7 @@ extern void xemucfg_define_float_option  ( const char *optname, const double def
 extern void xemucfg_define_switch_option ( const char *optname,                      const char *help, int    *storage  );
 extern void xemucfg_define_proc_option   ( const char *optname, xemucfg_parser_callback_func_t cb, const char *help     );
 
-extern int  xemucfg_parse_all ( int argc, char **argv );
+extern int  xemucfg_parse_all ( void );
 extern int  xemucfg_save_config_file  ( const char *filename, const char *initial_part, const char *cry );
 extern int  xemucfg_parse_config_file ( const char *filename_in, const char *open_fail_msg );
 extern const char *xemucfg_get_default_config_file_name ( void );
@@ -149,7 +155,9 @@ extern int  xemucfg_str2int    ( const char *s,    int *result );
 extern int  xemucfg_str2double ( const char *s, double *result );
 extern int  xemucfg_str2bool   ( const char *s,    int *result );
 
-extern void xemucfg_get_cli_info ( const char **exec_name_ptr, int *argc_ptr, char ***argv_ptr );
+extern const char *xemucfg_get_optname ( void *dataptr );
+extern void xemucfg_set_options_to_default ( const void *ptrs[] );
+extern void xemucfg_add_flags_to_options   ( const void *ptrs[], const unsigned int flags );
 
 #ifndef XEMU_RELEASE_BUILD
 extern void xemucfg_dump_db ( const char *msg );
