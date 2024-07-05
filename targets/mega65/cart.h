@@ -1,4 +1,4 @@
-/* A work-in-progess MEGA65 (Commodore-65 clone origins) emulator
+/* A work-in-progess MEGA65 (Commodore 65 clone origins) emulator
    Part of the Xemu project, please visit: https://github.com/lgblgblgb/xemu
    Copyright (C)2016-2024 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
 
@@ -16,11 +16,15 @@ You should have received a copy of the GNU General Public License
 along with this program; if not, write to the Free Software
 Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
 
-#ifndef XEMU_MEGA65_MATRIX_MODE_H_INCLUDED
-#define XEMU_MEGA65_MATRIX_MODE_H_INCLUDED
+#ifndef XEMU_MEGA65_CART_H_INCLUDED
+#define XEMU_MEGA65_CART_H_INCLUDED
 
-extern int in_the_matrix;
-
-extern void matrix_mode_toggle ( int status );
+extern void  cart_init       ( void );
+extern Uint8 cart_read_byte  ( unsigned int addr );
+extern void  cart_write_byte ( unsigned int addr, Uint8 data );
+extern int   cart_load_bin   ( const char *fn, const unsigned int addr, const char *cry );
+extern void  cart_copy_from  ( const Uint16 cart_addr, Uint8 *target, const Uint16 size );
+extern int   cart_detect_id  ( void );
+extern int   cart_is_loaded  ( void );
 
 #endif
