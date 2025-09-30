@@ -1,6 +1,6 @@
 /* A work-in-progess MEGA65 (Commodore-65 clone origins) emulator
    Part of the Xemu project, please visit: https://github.com/lgblgblgb/xemu
-   Copyright (C)2016-2023 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
+   Copyright (C)2016-2025 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -51,24 +51,15 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
 #define AUDIO_SAMPLE_FREQ	44100
 
 extern void m65mon_show_regs ( void );
-extern void m65mon_set_pc    ( const Uint16 addr );
-extern void m65mon_dumpmem16 ( Uint16 addr );
-extern void m65mon_dumpmem28 ( int addr );
-extern void m65mon_setmem28  ( int addr, int cnt, Uint8* vals );
-extern void m65mon_set_trace ( int m );
-extern void m65mon_do_trace  ( void );
-#ifdef TRACE_NEXT_SUPPORT
-extern void m65mon_next_command ( void );
-#endif
-extern void m65mon_empty_command ( void );
-extern void m65mon_do_trace_c ( void );
-extern void m65mon_breakpoint ( int brk );
-
 extern void machine_set_speed ( int verbose );
 
-extern void reset_mega65      ( void );
-extern int  reset_mega65_asked( void );
-extern void reset_mega65_cpu_only ( void );
+// no 0 code! bitfields are from 0x100 and above
+#define RESET_MEGA65_HARD	0x001
+#define RESET_MEGA65_CPU	0x002
+#define RESET_MEGA65_HYPPO	0x003
+#define RESET_MEGA65_LAST_ID	RESET_MEGA65_HYPPO
+#define RESET_MEGA65_ASK	0x100
+extern int  reset_mega65 ( const unsigned int options );
 
 extern int  mega65_set_model ( const Uint8 id );
 
@@ -78,6 +69,10 @@ extern int  dump_screen       ( const char *fn );
 extern Uint8 last_dd00_bits;
 extern const char *last_reset_type;
 extern int cpu_cycles_per_step;
-extern const char *cpu_clock_speed_string;
+extern const char *cpu_clock_speed_string_p;
+extern int paused;
+extern int trace_step_trigger;
+extern int trace_next_trigger;
+extern int orig_sp;
 
 #endif

@@ -1,6 +1,6 @@
 /* F018 DMA core emulation for MEGA65
    Part of the Xemu project.  https://github.com/lgblgblgb/xemu
-   Copyright (C)2016-2023 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
+   Copyright (C)2016-2024 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -23,6 +23,7 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
 #include "xemu/cpu65.h"
 #include "rom.h"
 #include "vic4.h"
+#include "hypervisor.h"
 
 
 //#define DO_DEBUG_DMA
@@ -33,7 +34,7 @@ Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA */
 #	define DEBUGDMA(...)   DEBUG(__VA_ARGS__)
 #endif
 
-int in_dma;	// DMA session is in progress if non-zero. Also used by the main emu loop to tell if it needs to call DMA or CPU emu.
+Uint8 in_dma;	// DMA session is in progress if non-zero. Also used by the main emu loop to tell if it needs to call DMA or CPU emu.
 
 // Hacky stuff:
 // low byte: the transparent byte value
@@ -62,14 +63,22 @@ static Uint8 minterms[4];		// Used with MIX DMA command only
 static Uint8 filler_byte;		// byte used for FILL DMA command only
 static int   enhanced_mode;		// MEGA65 enhanced mode DMA
 static int   with_io;			// legacy MEGA65 stuff, should be removed? 0x80 or 0
+static unsigned int list_entry_pos = 0;
+static bool  mb_cross_global = false;	// allow to cross megabyte boundary
+static bool  mb_cross;			// (same as above, for the current session though)
 
 // On C65, DMA cannot cross 64K boundaries, so the right mask is 0xFFFF
 // On MEGA65 it seems to be 1Mbyte, thus the mask should be 0xFFFFF
 // channel.addr is a fixed-point value, with the lower 8 bits being the fractional part
 #define DMA_ADDRESSING(channel)		(((channel.addr >> 8) & 0xFFFFF) + channel.base)
 
+struct ldm_st {
+	Uint32 x_col, y_col, slope, slope_accu;
+	Uint8  slope_type;
+};
+
 // source and target DMA "channels":
-static struct {
+static struct dma_channel_st {
 	int   addr;		// address of the current operation, it's a fixed-point math value
 	int   base;		// base address for "addr", always a "pure" number! It also contains the "megabyte selection", pre-shifted by << 20
 	int   step;		// step value, zero(HOLD)/negative/positive, this is a fixed point arithmetic value!!
@@ -78,6 +87,7 @@ static struct {
 	Uint8 mbyte;		// megabyte slice selected during option read
 	int   is_modulo;	// modulo mode, if it's non-zero
 	int   also_io;		// channel access I/O instead of memory, if it's non-zero
+	struct ldm_st ldm;	// LDM = Line Drawing Mode
 } source, target;
 
 static struct {
@@ -87,13 +97,13 @@ static struct {
 
 static inline Uint8 io_dma_reader ( const unsigned int addr )
 {
-	return io_read((addr & 0xFFFU) + (vic_iomode << 12));
+	return io_read((addr & 0xFFFU) + (io_mode << 12));
 }
 
 
 static inline void  io_dma_writer ( const unsigned int addr, Uint8 data )
 {
-	io_write((addr & 0xFFFU) + (vic_iomode << 12), data);
+	io_write((addr & 0xFFFU) + (io_mode << 12), data);
 }
 
 
@@ -146,10 +156,6 @@ static XEMU_INLINE void dma_write_target ( const Uint8 data )
 }
 
 
-#ifdef DO_DEBUG_DMA
-static int list_entry_pos = 0;
-#endif
-
 static Uint8 dma_read_list_next_byte ( void )
 {
 	Uint8 data;
@@ -162,23 +168,64 @@ static Uint8 dma_read_list_next_byte ( void )
 	}
 #ifdef	DO_DEBUG_DMA
 	DEBUGPRINT("DMA: reading DMA (rev#%d) list from $%08X [%s] [#%d]: $%02X" NL, session_revision, list_addr, list_addr_policy ? "CPU-addr" : "linear-addr", list_entry_pos, data);
-	list_entry_pos++;
 #endif
+	list_entry_pos++;
 	list_addr++;
 	return data;
 }
 
+
+static XEMU_INLINE void address_stepping ( struct dma_channel_st *const channel )
+{
+	if (XEMU_LIKELY(!(channel->ldm.slope_type & 0x80))) {
+		// normal, non-LDM (line drawning mode) method
+		channel->addr += channel->step;
+		if (XEMU_UNLIKELY(mb_cross && (unsigned)channel->addr > 0xFFFFFFFU)) {	// addr: 1 mbyte range + 8 bit fractional part
+			channel->addr &= 0xFFFFFFFU;
+			if (channel->step >= 0) {
+				channel->mbyte++;
+				channel->base = (channel->base + 0x100000) & 0xFFFFFFFU;	// base: pure number, no fractional part but 256 mbyte range
+			} else {
+				channel->mbyte--;
+				channel->base = (channel->base - 0x100000) & 0xFFFFFFFU;
+			}
+		}
+		return;
+	}
+	// otherwise, we must deal with LDM. The following code is based
+	// on ideas found in a sample C implementation written by btoschi. THANKS!!
+	// WARNING: in Xemu, I use a single variable for "addr" and lower 8 bit is the fractional part!!
+	if (channel->ldm.slope_type & 0x40) {
+		channel->addr += 0x800U;	// +8 -> we always step in Y
+		if (channel->ldm.slope_accu > 0xFFFFU) {
+			channel->ldm.slope_accu &= 0xFFFFU;
+			if (channel->ldm.slope_type & 0x20)
+				channel->addr -= ((channel->addr & 0x700) == 0) ? channel->ldm.x_col + 0x100 : 0x100;
+			else
+				channel->addr += ((channel->addr & 0x700) == 0) ? channel->ldm.x_col + 0x100 : 0x100;
+		}
+	} else {
+		channel->addr += ((channel->addr & 0x700) == 0x700) ? channel->ldm.x_col + 0x100 : 0x100;
+		channel->ldm.slope_accu += channel->ldm.slope;
+		if (channel->ldm.slope_accu > 0xFFFFU) {
+			channel->ldm.slope_accu &= 0xFFFFU;
+			channel->addr += (channel->ldm.slope_type & 0x20) ? -0x800 : 0x800;
+		}
+	}
+}
+
+
 static XEMU_INLINE void copy_next ( void )
 {
 	dma_write_target(dma_read_source());
-	source.addr += source.step;
-	target.addr += target.step;
+	address_stepping(&source);
+	address_stepping(&target);
 }
 
 static XEMU_INLINE void fill_next ( void )
 {
 	dma_write_target(filler_byte);
-	target.addr += target.step;
+	address_stepping(&target);
 }
 
 static XEMU_INLINE void swap_next ( void )
@@ -187,8 +234,8 @@ static XEMU_INLINE void swap_next ( void )
 	Uint8 da = dma_read_target();
 	dma_write_source(da);
 	dma_write_target(sa);
-	source.addr += source.step;
-	target.addr += target.step;
+	address_stepping(&source);
+	address_stepping(&target);
 }
 
 static XEMU_INLINE void mix_next ( void )
@@ -206,8 +253,8 @@ static XEMU_INLINE void mix_next ( void )
 		((~sa) & ( da) & minterms[1]) |
 		((~sa) & (~da) & minterms[0]) ;
 	dma_write_target(da);
-	source.addr += source.step;
-	target.addr += target.step;
+	address_stepping(&source);
+	address_stepping(&target);
 }
 
 
@@ -219,9 +266,9 @@ void dma_write_reg ( int addr, Uint8 data )
 	if (XEMU_UNLIKELY(in_dma)) {
 		// this is just an emergency stuff to disallow DMA to update its own registers ... FIXME: what would be the correct policy?
 		// NOTE: without this, issuing a DMA transfer updating DMA registers would affect an on-going DMA transfer!
-		static int do_warn = 1;
+		static bool do_warn = true;
 		if (do_warn) {
-			do_warn = 0;
+			do_warn = false;
 			ERROR_WINDOW("DMA writes its own registers, ignoring!\nThere will be no more warning on this!");
 		}
 		DEBUG("DMA: WARNING: tries to write own register by DMA reg#%d with value of $%02X" NL, addr, data);
@@ -242,6 +289,7 @@ void dma_write_reg ( int addr, Uint8 data )
 				DEBUGPRINT("DMA: default DMA chip revision change %d -> %d because of writing DMA register 3" NL, default_revision, data & 1);
 				default_revision = data & 1;
 			}
+			mb_cross_global = !!(data & 2);
 			return;
 		case 0x4:
 			list_addr = (list_addr & 0xFFFFF) + (data << 20);	// setting bits 27-20
@@ -294,6 +342,9 @@ void dma_write_reg ( int addr, Uint8 data )
 	source.mbyte = 0;			// source MB
 	target.mbyte = 0;			// target MB
 	length_byte3 = 0;			// length byte for >=64K DMA sessions
+	source.ldm.slope_type = 0;		// source: line drawing mode, slope type, do not enable line drawing mode by default
+	target.ldm.slope_type = 0;		// target: -- "" --
+	mb_cross = mb_cross_global;		// allow to cross megabyte boundaries
 	if (enhanced_mode)
 		DEBUGDMA("DMA: initiation of ENCHANCED MODE DMA!!!!\n");
 	else
@@ -321,7 +372,7 @@ int dma_update ( void )
 {
 	int cycles = 0;
 	if (XEMU_UNLIKELY(!in_dma))
-		FATAL("dma_update() called with no in_dma set!");
+		FATAL("dma_update() called without in_dma being set!");
 	if (XEMU_UNLIKELY(command == -1)) {
 		if (XEMU_UNLIKELY(list_addr_policy == 3)) {
 			list_addr = cpu65.pc;
@@ -329,19 +380,25 @@ int dma_update ( void )
 			list_addr_policy = 2;
 		}
 		if (enhanced_mode) {
-			Uint8 opt, optval;
-			do {
-				opt = dma_read_list_next_byte();
+			list_entry_pos = 0;
+			for (;;) {
+				const Uint8 opt = dma_read_list_next_byte();
 				DEBUGDMA("DMA: enhanced option byte $%02X read" NL, opt);
 				cycles++;
+				if (!opt) {
+					DEBUGDMA("DMA: end of enhanced options" NL);
+					break;
+				}
+				Uint8 optval;
 				if ((opt & 0x80)) {	// all options >= 0x80 have an extra bytes as option parameter
 					optval = dma_read_list_next_byte();
 					DEBUGDMA("DMA: enhanced option byte parameter $%02X read" NL, optval);
 					cycles++;
 				}
 				switch (opt) {
-					case 0x00:
-						DEBUGDMA("DMA: end of enhanced options" NL);
+					// case 0x00 (end of enhanced option list) is already handled
+					case 0x01:	// enable megabyte crossing
+						mb_cross = true;
 						break;
 					case 0x06:	// disable transparency (setting high byte of transparency, thus will never match)
 						transparency |= 0x100;
@@ -375,8 +432,62 @@ int dma_update ( void )
 					case 0x86:	// byte value to be treated as "transparent" (ie: skip writing that data), if enabled
 						transparency = (transparency & 0x100) | (unsigned int)optval;
 						break;
+					case 0x87:	// DMA line drawing mode TARGET - X col (LSB)
+						target.ldm.x_col = (target.ldm.x_col & 0xFF0000U) + (optval <<  8);	// Xemu integer + 8 bit fractional part arithmetic!
+						break;
+					case 0x88:	// DMA line drawing mode TARGET - X col (MSB)
+						target.ldm.x_col = (target.ldm.x_col & 0x00FF00U) + (optval << 16);	// Xemu integer + 8 bit fractional part arithmetic!
+						break;
+					case 0x89:	// DMA line drawing mode TARGET - Row Y col (LSB)
+						target.ldm.y_col = (target.ldm.y_col & 0xFF00U) + optval;
+						break;
+					case 0x8A:	// DMA line drawing mode TARGET - Row Y col (MSB)
+						target.ldm.y_col = (target.ldm.y_col & 0x00FFU) + (optval << 8);
+						break;
+					case 0x8B:	// DMA line drawing mode TARGET - Slope (LSB)
+						target.ldm.slope = (target.ldm.slope & 0xFF00U) + optval;
+						break;
+					case 0x8C:	// DMA line drawing mode TARGET - Slope (MSB)
+						target.ldm.slope = (target.ldm.slope & 0x00FFU) + (optval << 8);
+						break;
+					case 0x8D:	// DMA line drawing mode TARGET - Slope init value (LSB)
+						target.ldm.slope_accu = (target.ldm.slope_accu & 0xFF00U) + optval;
+						break;
+					case 0x8E:	// DMA line drawing mode TARGET - Slope init value (MSB)
+						target.ldm.slope_accu = (target.ldm.slope_accu & 0x00FFU) + (optval << 8);
+						break;
+					case 0x8F:	// DMA line drawing mode TARGET - Slope type
+						target.ldm.slope_type = optval;
+						break;
 					case 0x90:	// extra high byte of DMA length (bits 23-16) to allow to have >64K DMA
 						length_byte3 = optval;
+						break;
+					case 0x97:	// DMA line drawing mode SOURCE - X col (LSB)
+						source.ldm.x_col = (source.ldm.x_col & 0xFF0000U) + (optval <<  8);	// Xemu integer + 8 bit fractional part arithmetic!
+						break;
+					case 0x98:	// DMA line drawing mode SOURCE - X col (MSB)
+						source.ldm.x_col = (source.ldm.x_col & 0x00FF00U) + (optval << 16);	// Xemu integer + 8 bit fractional part arithmetic!
+						break;
+					case 0x99:	// DMA line drawing mode SOURCE - Row Y col (LSB)
+						source.ldm.y_col = (source.ldm.y_col & 0xFF00U) + optval;
+						break;
+					case 0x9A:	// DMA line drawing mode SOURCE - Row Y col (MSB)
+						source.ldm.y_col = (source.ldm.y_col & 0x00FFU) + (optval << 8);
+						break;
+					case 0x9B:	// DMA line drawing mode SOURCE - Slope (LSB)
+						source.ldm.slope = (source.ldm.slope & 0xFF00U) + optval;
+						break;
+					case 0x9C:	// DMA line drawing mode SOURCE - Slope (MSB)
+						source.ldm.slope = (source.ldm.slope & 0x00FFU) + (optval << 8);
+						break;
+					case 0x9D:	// DMA line drawing mode SOURCE - Slope init value (LSB)
+						source.ldm.slope_accu = (source.ldm.slope_accu & 0xFF00U) + optval;
+						break;
+					case 0x9E:	// DMA line drawing mode SOURCE - Slope init value (MSB)
+						source.ldm.slope_accu = (source.ldm.slope_accu & 0x00FFU) + (optval << 8);
+						break;
+					case 0x9F:	// DMA line drawing mode SOURCE - Slope type
+						source.ldm.slope_type = optval;
 						break;
 					default:
 						// maybe later we should keep this quiet ...
@@ -386,14 +497,25 @@ int dma_update ( void )
 							DEBUGPRINT("DMA: *unknown* enhanced option: $%02X @ PC=$%04X" NL, opt, cpu65.pc);
 						break;
 				}
-			} while (opt);
+				if (XEMU_UNLIKELY(list_entry_pos > 255)) {
+					// FIXME: current design of DMA emulation uses a blocking loop to fetch enhanced mode options
+					// This is bad, if there is a very long list (which shouldn't be valid anyway though ...)
+					// Thus I abort the whole DMA session in case of a problem like that.
+					static bool do_warn = true;
+					if (do_warn) {
+						do_warn = false;
+						ERROR_WINDOW("DMA: Enhanced mode DMA option list is abnormally long (%u bytes).\nAborting DMA session! Buggy software running?\nNo more reports will be produced by Xemu." NL, list_entry_pos);
+					}
+					in_dma = 0;
+					command = -1;
+					return cycles;
+				}
+			}
 		}
+		list_entry_pos = 0;
 		// command == -1 signals the situation, that the (next) DMA command should be read!
 		// This part is highly incorrect, ie fetching so many bytes in one step only of dma_update()
 		// NOTE: in case of MEGA65: dma_read_list_next_byte() uses the "megabyte" part already (taken from reg#4, in case if that reg is written)
-#ifdef		DO_DEBUG_DMA
-		list_entry_pos = 0;
-#endif
 		command            = dma_read_list_next_byte();
 		dma_op             = (enum dma_op_types)(command & 3);
 		modulo.col_limit   = dma_read_list_next_byte();
@@ -500,6 +622,8 @@ int dma_update ( void )
 		);
 		if (!length)
 			length = 0x10000;			// I *think* length of zero means 64K. Probably it's not true!!
+		if (in_hypervisor)
+			mb_cross = false;			// Megabyte-crossing is disabled in hypervisor mode!
 		return cycles;
 	}
 	// We have valid command to be executed, or continue to execute
@@ -607,6 +731,7 @@ void dma_reset ( void )
 	target.base = 0;
 	list_addr = 0;
 	with_io = 0;
+	mb_cross_global = false;
 }
 
 
@@ -654,58 +779,3 @@ void dma_set_list_addr_from_bytes ( const Uint8 *p )
 	list_addr = p[0] + (p[1] << 8) + (p[2] << 16) + ((p[3] & 0x0F) << 24);
 	DEBUGDMA("DMA: list address is set 'externally' to $%X" NL, list_addr);
 }
-
-/* --- SNAPSHOT RELATED --- */
-
-#ifdef XEMU_SNAPSHOT_SUPPORT
-
-// Note: currently state is not saved "within" a DMA operation. It's only a problem, if a DMA
-// operation is not handled fully here, but implemented as an iterating update method from the
-// emulator code. FIXME.
-
-#include <string.h>
-
-#define SNAPSHOT_DMA_BLOCK_VERSION	2
-#define SNAPSHOT_DMA_BLOCK_SIZE		0x100
-
-
-int dma_snapshot_load_state ( const struct xemu_snapshot_definition_st *def, struct xemu_snapshot_block_st *block )
-{
-	Uint8 buffer[SNAPSHOT_DMA_BLOCK_SIZE];
-	int a;
-	if (block->block_version != SNAPSHOT_DMA_BLOCK_VERSION || block->sub_counter || block->sub_size != sizeof buffer)
-		RETURN_XSNAPERR_USER("Bad C65 block syntax");
-	a = xemusnap_read_file(buffer, sizeof buffer);
-	if (a) return a;
-	/* loading state ... */
-	memcpy(dma_registers, buffer, sizeof dma_registers);
-	dma_chip_revision		= buffer[0x80];
-	dma_chip_initial_revision	= buffer[0x81];
-	//dma_chip_revision_is_dynamic	= buffer[0x82];
-	modulo.enabled			= buffer[0x83];
-	dma_status			= buffer[0x84];
-	in_dma_update			= buffer[0x85];
-	return 0;
-}
-
-
-int dma_snapshot_save_state ( const struct xemu_snapshot_definition_st *def )
-{
-	Uint8 buffer[SNAPSHOT_DMA_BLOCK_SIZE];
-	int a = xemusnap_write_block_header(def->idstr, SNAPSHOT_DMA_BLOCK_VERSION);
-	if (a) return a;
-	memset(buffer, 0xFF, sizeof buffer);
-	/* saving state ... */
-	memcpy(buffer, dma_registers, sizeof dma_registers);
-	buffer[0x80] = dma_chip_revision;
-	buffer[0x81] = dma_chip_initial_revision;
-	//buffer[0x82] = dma_chip_revision_is_dynamic ? 1 : 0;
-	buffer[0x83] = modulo.enabled ? 1 : 0;
-	buffer[0x84] = dma_status;		// bit useless to store (see below, actually it's a problem), but to think about the future ...
-	buffer[0x85] = in_dma_update ? 1 : 0;	// -- "" --
-	if (dma_status)
-		WARNING_WINDOW("f018_core DMA snapshot save: snapshot with DMA pending! Snapshot WILL BE incorrect on loading! FIXME!");	// FIXME!
-	return xemusnap_write_sub_block(buffer, sizeof buffer);
-}
-
-#endif

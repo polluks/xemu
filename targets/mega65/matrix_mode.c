@@ -1,6 +1,6 @@
 /* A work-in-progess MEGA65 (Commodore-65 clone origins) emulator
    Part of the Xemu project, please visit: https://github.com/lgblgblgb/xemu
-   Copyright (C)2016-2024 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
+   Copyright (C)2016-2025 LGB (Gábor Lénárt) <lgblgblgb@gmail.com>
 
 This program is free software; you can redistribute it and/or modify
 it under the terms of the GNU General Public License as published by
@@ -271,11 +271,11 @@ static void dump_regs ( const char rot_fig )
 		(pf & CPU65_PF_I) ? 'I' : 'i',
 		(pf & CPU65_PF_Z) ? 'Z' : 'z',
 		(pf & CPU65_PF_C) ? 'C' : 'c',
-		iomode_hexdigitids[vic_iomode],
+		iomode_hexdigitids[io_mode],
 		in_hypervisor ? 'H' : 'U',
 		rot_fig,
 		videostd_id ? "NTSC" : "PAL ",
-		cpu_clock_speed_string,
+		cpu_clock_speed_string_p,
 		(D6XX_registers[0x7D] & 16) ? '!' : ' '
 	);
 }
@@ -285,7 +285,7 @@ static void dump_map ( void )
 {
 	char desc[10];
 	for (unsigned int i = 0; i < 16; i++) {
-		mem_get_4k_region_short_desc(desc, sizeof desc, i);
+		memory_cpu_addr_to_desc(i << 12, desc, sizeof desc);
 		MATRIX("{%X:}%7s%c", i, desc, (i & 7) == 7 ? ' ' : '|');
 	}
 }
@@ -337,6 +337,11 @@ static void cmd_map ( char *arg )
 	write_special_chars_mode = 1;
 	dump_map();
 	write_special_chars_mode = 0;
+	MATRIX("MAP: HI-MB=$%02X LO-MB=$%02X HI-OFS=$%04X LO-OFS=$%04X MASK=$%02X",
+		map_megabyte_high >> 20, map_megabyte_low >> 20,
+		map_offset_high >> 8, map_offset_low >> 8,
+		map_mask
+	);
 }
 
 
@@ -408,11 +413,11 @@ static void cmd_write ( char *p )
 	if (mem_args(p, 1) != 2)
 		return;
 	if (addr_hiword == 0xFFFF) {
-		cpu65_write_callback(addr_loword, data_byte);
+		debug_write_cpu_byte(addr_loword, data_byte);
 		return;
 	}
 	const Uint32 addr = ((Uint32)addr_hiword << 16) + (Uint32)addr_loword;
-	memory_debug_write_phys_addr(addr, data_byte);
+	debug_write_linear_byte(addr, data_byte);
 }
 
 
@@ -421,11 +426,11 @@ static void cmd_show ( char *p )
 	if (mem_args(p, 0) != 1)
 		return;
 	if (addr_hiword == 0xFFFF) {
-		MATRIX("[cpu:%04X] = %02X", addr_loword, cpu65_read_callback(addr_loword));
+		MATRIX("[cpu:%04X] = %02X", addr_loword, debug_read_cpu_byte(addr_loword));
 		return;
 	}
 	const Uint32 addr = ((Uint32)addr_hiword << 16) + (Uint32)addr_loword;
-	MATRIX("[%03X:%04X] = %02X", addr_hiword, addr_loword, memory_debug_read_phys_addr(addr));
+	MATRIX("[%03X:%04X] = %02X", addr_hiword, addr_loword, debug_read_linear_byte(addr));
 }
 
 
@@ -443,9 +448,9 @@ static void dump_mem_lines ( int lines, const char sepchr )
 		for (int i = 0; i < 16; i++) {
 			Uint8 data;
 			if (addr_hiword == 0xFFFF)
-				data = cpu65_read_callback(addr_loword++);
+				data = debug_read_cpu_byte(addr_loword++);
 			else {
-				data = memory_debug_read_phys_addr(((Uint32)addr_hiword << 16) + (Uint32)addr_loword);
+				data = debug_read_linear_byte(((Uint32)addr_hiword << 16) + (Uint32)addr_loword);
 				addr_loword++;
 				if (!addr_loword)
 					addr_hiword++;
@@ -468,7 +473,7 @@ static Uint8 d_bytes[10];
 
 static Uint8 reader_for_disasm_phys ( const unsigned int addr, const unsigned int ofs )
 {
-	const Uint8 b = memory_debug_read_phys_addr((addr + ofs) & 0xFFFFFFU);
+	const Uint8 b = debug_read_linear_byte((addr + ofs) & 0xFFFFFFU);
 	d_bytes[ofs] = b;
 	return b;
 }
@@ -476,7 +481,7 @@ static Uint8 reader_for_disasm_phys ( const unsigned int addr, const unsigned in
 
 static Uint8 reader_for_disasm_cpu ( const unsigned int addr, const unsigned int ofs )
 {
-	const Uint8 b = cpu65_read_callback((addr + ofs) & 0xFFFFU);
+	const Uint8 b = debug_read_cpu_byte((addr + ofs) & 0xFFFFU);
 	d_bytes[ofs] = b;
 	return b;
 }
@@ -562,7 +567,7 @@ static void cmd_live ( char *p )
 
 static void cmd_reset ( char *p )
 {
-	reset_mega65();
+	reset_mega65(RESET_MEGA65_HARD);
 }
 
 
